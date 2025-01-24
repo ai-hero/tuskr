@@ -1,0 +1,10 @@
+[project]
+name = "tuskr"
+version = "0.1.0"
+description = "Move Mountains. One task at a time."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "kopf>=1.37.4",
+    "kubernetes>=32.0.0",
+]
