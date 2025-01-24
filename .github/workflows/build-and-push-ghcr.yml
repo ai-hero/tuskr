@@ -40,7 +40,7 @@ jobs:
             org.opencontainers.image.source=${{ github.repository }}
 
       - name: Install GitHub CLI
-        uses: cli/cli@v2
+        uses: cli/cli@v2.22.1
         with:
           version: latest
 
