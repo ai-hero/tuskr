@@ -82,14 +82,14 @@ class LaunchResource:
             resp.body = json.dumps({"error": "Invalid JSON."})
             return
 
-        jobtemplate_name = data.get("jobTemplateName")
-        jobtemplate_namespace = data.get("jobTemplateNamespace")
+        jobtemplate_name = data.get("jobTemplate").get("name")
+        jobtemplate_namespace = data.get("jobTemplate").get("namespace")
         command_override = data.get("command")
         args_override = data.get("args")
 
         if not jobtemplate_name or not jobtemplate_namespace:
             resp.status = falcon.HTTP_400
-            resp.body = json.dumps({"error": "Must provide 'jobTemplateName' and 'jobTemplateNamespace'."})
+            resp.body = json.dumps({"error": "Must provide 'jobTemplate.name' and 'jobTemplat.namespace'."})
             return
 
         # Retrieve the JobTemplate from the specified namespace
