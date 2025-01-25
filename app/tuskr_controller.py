@@ -195,7 +195,7 @@ def start_http_server(**kwargs):
     app.add_route("/launch", launch_resource)
 
     def _run_server():
-        with make_server("", 8000, app) as httpd:
+        with make_server("", 8080, app) as httpd:
             logger.info("Falcon HTTP server running on port 8000...")
             httpd.serve_forever()
 
