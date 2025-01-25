@@ -79,27 +79,10 @@ def job_redis_key(namespace, job_name):
 
 
 # ------------------------------------------------------------------
-# Simple in-memory rate limiting for launching Jobs
-# ------------------------------------------------------------------
-MIN_LAUNCH_INTERVAL_SEC = 30  # e.g. 30 seconds
-last_launch_time = 0.0  # Track last job launch
-
-
-# ------------------------------------------------------------------
 # Falcon Resource: Launch a Job from a JobTemplate
 # ------------------------------------------------------------------
 class LaunchResource:
     def on_post(self, req, resp):
-        global last_launch_time
-
-        # Check rate limit
-        now = time.time()
-        if (now - last_launch_time) < MIN_LAUNCH_INTERVAL_SEC:
-            logger.warning("Launch request denied due to rate limit.")
-            resp.status = falcon.HTTP_429  # Too Many Requests
-            resp.media = {"error": "Rate limit exceeded. Please wait."}
-            return
-
         # Parse incoming JSON
         raw_body = req.stream.read(req.content_length or 0)
         if not raw_body:
@@ -191,9 +174,6 @@ class LaunchResource:
             resp.status = falcon.HTTP_500
             resp.media = {"error": str(e)}
             return
-
-        # Update last_launch_time for rate limiting
-        last_launch_time = time.time()
 
         msg = f"Created Job '{job_name}' in namespace '{target_namespace}' from template '{jobtemplate_name}'."
         logger.info(msg)
