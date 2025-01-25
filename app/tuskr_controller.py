@@ -1,3 +1,5 @@
+import random
+import string
 import logging
 import time
 
@@ -54,6 +56,12 @@ def delete_jobtemplate(body, spec, **kwargs):
 # Simple in-memory rate limiting example:
 MIN_LAUNCH_INTERVAL_SEC = 30  # e.g. 30 seconds
 last_launch_time = 0.0  # Track last job launch
+
+
+def generate_random_suffix(length=5):
+    """Generate a short random string of letters/digits."""
+    chars = string.ascii_lowercase + string.digits
+    return "".join(random.choices(chars, k=length))
 
 
 class LaunchResource:
@@ -116,35 +124,30 @@ class LaunchResource:
                 return
 
         # Extract the Kubernetes Job spec from the JobTemplate.
-        job_spec_from_template = jobtemplate.get("spec", {}).get("template")
+        job_spec_from_template = jobtemplate.get("spec", {}).get("jobSpec", {}).get("template", {})
+
         if not job_spec_from_template:
-            msg = f"No 'spec.template' found in JobTemplate {jobtemplate_name}"
+            msg = f"No 'spec.jobSpec.template' found in JobTemplate {jobtemplate_name}"
             logger.warning(msg)
             resp.status = falcon.HTTP_400
             resp.media = {"error": msg}
             return
 
-        # Overwrite command/args if provided
-        pod_spec = job_spec_from_template.get("template", {}).get("spec", {})
+        # Now override containers
+        pod_spec = job_spec_from_template.get("spec", {})
         containers = pod_spec.get("containers", [])
+
         if containers:
             if command_override:
                 containers[0]["command"] = command_override
-                logger.info(f"Overriding command with: {command_override}")
             if args_override:
                 containers[0]["args"] = args_override
-                logger.info(f"Overriding args with: {args_override}")
-        else:
-            logger.warning("JobTemplate has no containers to override.")
 
-        # Construct the actual Job manifest
-        # Decide which namespace to create the Job in.
-        #  - If you always want to create in the same namespace as the JobTemplate:
+        # Construct the actual Job manifest.
+        # We typically want job_body["spec"]["template"] to contain the 'metadata' + 'spec' for the PodTemplateSpec
+        random_suffix = generate_random_suffix()
+        job_name = f"{jobtemplate_name}-{random_suffix}"
         target_namespace = jobtemplate_namespace
-        #  - Or if you want a custom field for the target namespace:
-        # target_namespace = data.get("targetNamespace", jobtemplate_namespace)
-
-        job_name = f"{jobtemplate_name}-launch-{int(time.time())}"
         job_body = {
             "apiVersion": "batch/v1",
             "kind": "Job",
@@ -152,7 +155,9 @@ class LaunchResource:
                 "name": job_name,
                 "labels": {"jobtemplate": jobtemplate_name},
             },
-            "spec": job_spec_from_template,
+            "spec": {
+                "template": job_spec_from_template,  # <=== Notice we pass in the "template" structure
+            },
         }
 
         # Create the Job
