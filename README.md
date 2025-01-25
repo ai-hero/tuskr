@@ -1,2 +1,2 @@
 # tuskr
-Move Mountains. One task at a time.
+Perform Mammoth Tasks. One job at a time.

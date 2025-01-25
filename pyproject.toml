@@ -1,11 +1,12 @@
 [project]
 name = "tuskr"
 version = "0.1.0"
-description = "Move Mountains. One task at a time."
+description = "Perform Mammoth Tasks. One job at a time."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "falcon>=4.0.2",
-    "kopf>=1.37.4",
-    "kubernetes>=32.0.0",
+ "kopf>=1.37.4",
+ "kubernetes>=32.0.0",
+ "redis>=5.2.1",
 ]
