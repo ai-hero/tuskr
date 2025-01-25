@@ -65,21 +65,21 @@ class LaunchResource:
         if (now - last_launch_time) < MIN_LAUNCH_INTERVAL_SEC:
             logger.warning("Launch request denied due to rate limit.")
             resp.status = falcon.HTTP_429  # Too Many Requests
-            resp.body = json.dumps({"error": "Rate limit exceeded. Please wait."})
+            resp.media = {"error": "Rate limit exceeded. Please wait."}
             return
 
         # Parse incoming JSON
         raw_body = req.stream.read(req.content_length or 0)
         if not raw_body:
             resp.status = falcon.HTTP_400
-            resp.body = json.dumps({"error": "No JSON body provided."})
+            resp.media = {"error": "No JSON body provided."}
             return
 
         try:
             data = json.loads(raw_body)
         except json.JSONDecodeError:
             resp.status = falcon.HTTP_400
-            resp.body = json.dumps({"error": "Invalid JSON."})
+            resp.media = {"error": "Invalid JSON."}
             return
 
         jobtemplate_name = data.get("jobTemplate").get("name")
@@ -89,7 +89,7 @@ class LaunchResource:
 
         if not jobtemplate_name or not jobtemplate_namespace:
             resp.status = falcon.HTTP_400
-            resp.body = json.dumps({"error": "Must provide 'jobTemplate.name' and 'jobTemplat.namespace'."})
+            resp.media = {"error": "Must provide 'jobTemplate.name' and 'jobTemplat.namespace'."}
             return
 
         # Retrieve the JobTemplate from the specified namespace
@@ -107,12 +107,12 @@ class LaunchResource:
                 msg = f"JobTemplate {jobtemplate_name} not found in namespace {jobtemplate_namespace}."
                 logger.error(msg)
                 resp.status = falcon.HTTP_404
-                resp.body = json.dumps({"error": msg})
+                resp.media = {"error": msg}
                 return
             else:
                 logger.exception("Unexpected error fetching JobTemplate.")
                 resp.status = falcon.HTTP_500
-                resp.body = json.dumps({"error": str(e)})
+                resp.media = {"error": str(e)}
                 return
 
         # Extract the Kubernetes Job spec from the JobTemplate.
@@ -121,7 +121,7 @@ class LaunchResource:
             msg = f"No 'spec.template' found in JobTemplate {jobtemplate_name}"
             logger.warning(msg)
             resp.status = falcon.HTTP_400
-            resp.body = json.dumps({"error": msg})
+            resp.media = {"error": msg}
             return
 
         # Overwrite command/args if provided
@@ -162,7 +162,7 @@ class LaunchResource:
         except kubernetes.client.exceptions.ApiException as e:
             logger.exception("Failed to create Job.")
             resp.status = falcon.HTTP_500
-            resp.body = json.dumps({"error": str(e)})
+            resp.media = {"error": str(e)}
             return
 
         # Update last_launch_time for rate limiting
@@ -174,7 +174,7 @@ class LaunchResource:
         )
         logger.info(msg)
         resp.status = falcon.HTTP_201
-        resp.body = json.dumps({"message": msg})
+        resp.media = {"message": msg}
 
 
 # ------------------------------------------------------------------
@@ -196,7 +196,7 @@ def start_http_server(**kwargs):
 
     def _run_server():
         with make_server("", 8080, app) as httpd:
-            logger.info("Falcon HTTP server running on port 8000...")
+            logger.info("Falcon HTTP server running on port 8080...")
             httpd.serve_forever()
 
     import threading
