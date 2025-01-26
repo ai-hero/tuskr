@@ -6,7 +6,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "falcon>=4.0.2",
- "kopf>=1.37.4",
- "kubernetes>=32.0.0",
- "redis>=5.2.1",
+    "kopf>=1.37.4",
+    "kubernetes>=32.0.0",
+    "pymongo>=4.10.1",
+    "redis>=5.2.1",
 ]
