@@ -1,7 +1,6 @@
 import random
 import string
 import logging
-import time
 import json
 import threading
 import os
@@ -11,6 +10,8 @@ import kubernetes
 
 import falcon
 from wsgiref.simple_server import make_server
+from helpers.encoder import CustomJsonEncoder
+
 
 # Redis client
 import redis
@@ -76,6 +77,15 @@ def generate_random_suffix(length=5):
 def job_redis_key(namespace, job_name):
     """Generate a Redis key name for storing logs of a given Job."""
     return f"job_logs::{namespace}::{job_name}"
+
+
+# Create a custom Falcon JSON handler
+class CustomJSONHandler:
+    def serialize(self, media, content_type):
+        return json.dumps(media, cls=CustomJsonEncoder)
+
+    def deserialize(self, stream, content_type, content_length):
+        return json.loads(stream.read().decode("utf-8"))
 
 
 # ------------------------------------------------------------------
@@ -159,9 +169,15 @@ class LaunchResource:
             "metadata": {
                 "name": job_name,
                 "labels": {"jobtemplate": jobtemplate_name},
+                # Add TTL setting to automatically delete job after completion
+                "annotations": {
+                    "tuskr.io/ttl-seconds-after-finished": "900"  # 15 minutes = 900 seconds
+                },
             },
             "spec": {
                 "template": job_spec_from_template,
+                # Add TTL controller setting
+                "ttlSecondsAfterFinished": 900,  # 15 minutes
             },
         }
 
@@ -382,7 +398,10 @@ def start_http_server(**kwargs):
     Spin up a simple Falcon HTTP server on a chosen port.
     This will run in a separate thread alongside Kopf's event loop.
     """
-    app = falcon.App()
+    app = falcon.App(
+        media_type=falcon.MEDIA_JSON,
+        json_handler=CustomJSONHandler(),
+    )
 
     # Route for launching Jobs from JobTemplates
     launch_resource = LaunchResource()
