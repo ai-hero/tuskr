@@ -343,20 +343,18 @@ class JobDescribeResource:
 # Falcon Resource: Logs endpoint for a Job (store/append in Redis)
 # ------------------------------------------------------------------
 class JobLogsResource:
-    """Enhanced logs endpoint with streaming, pagination, and event correlation."""
+    """Returns logs for all Pods of a Job with status checks."""
+
+    def has_running_or_completed_pods(self, pods_list: Any) -> bool:
+        """Check if any pods are running or completed."""
+        for pod in pods_list.items:
+            phase = pod.status.phase
+            if phase in ["Running", "Succeeded", "Failed"]:
+                return True
+        return False
 
     def on_get(self, req: Request, resp: Response, namespace: str, job_name: str) -> None:
-        """Return logs and events for a Job with smart pagination and streaming support.
-
-        Query Parameters:
-        - follow (bool): Stream logs if true
-        - since_seconds (int): Return logs newer than this many seconds
-        - previous (bool): Return previous terminated container logs
-        - timestamps (bool): Add timestamps to logs
-        - tail_lines (int): Number of lines to return from the end
-        - container (str): Optional specific container name
-        - include_events (bool): Include related events
-        """
+        """Return logs for all Pods of a Job."""
         core_api = kubernetes.client.CoreV1Api()
         batch_api = kubernetes.client.BatchV1Api()
 
@@ -365,7 +363,7 @@ class JobLogsResource:
         since_seconds = req.get_param_as_int("since_seconds")
         previous = req.get_param_as_bool("previous", False)
         timestamps = req.get_param_as_bool("timestamps", True)
-        tail_lines = req.get_param_as_int("tail_lines", 100)  # Default to last 100 lines
+        tail_lines = req.get_param_as_int("tail_lines", 100)
         container = req.get_param("container")
         include_events = req.get_param_as_bool("include_events", True)
 
@@ -396,6 +394,19 @@ class JobLogsResource:
             resp.media = {"error": str(e)}
             return
 
+        # If no pods are running/completed and streaming was requested, return 409 Conflict
+        if follow and not self.has_running_or_completed_pods(pods_list):
+            resp.status = falcon.HTTP_409
+            resp.media = {
+                "error": "No pods are running or completed yet",
+                "job_status": {
+                    "active": job.status.active,
+                    "succeeded": job.status.succeeded,
+                    "failed": job.status.failed,
+                },
+            }
+            return
+
         # Gather logs for each pod/container
         logs = {}
         for pod in pods_list.items:
@@ -408,15 +419,13 @@ class JobLogsResource:
                 try:
                     # Stream logs if follow=True
                     if follow:
-                        # Note: In a production environment, you might want to
-                        # implement this with async/await and proper streaming response
                         pod_logs[container_name] = core_api.read_namespaced_pod_log(
                             name=pod_name,
                             namespace=namespace,
                             container=container_name,
                             follow=True,
                             timestamps=timestamps,
-                            _preload_content=False,  # Return a stream
+                            _preload_content=False,
                         )
                     else:
                         # Regular log fetch with pagination/filtering
