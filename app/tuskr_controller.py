@@ -23,6 +23,7 @@
 
 import json
 import logging
+import os
 import random
 import string
 import threading
@@ -34,6 +35,7 @@ from wsgiref.simple_server import make_server
 import falcon
 import kopf
 import kubernetes
+import redis  # type: ignore
 from falcon import Request, Response, media
 from pydantic import ValidationError
 
@@ -84,12 +86,26 @@ def delete_jobtemplate(body: Dict[str, Any], spec: Dict[str, Any], **kwargs: Any
 
 
 # ------------------------------------------------------------------
+# Redis setup
+# Adjust these if you have a different Redis connection
+# ------------------------------------------------------------------
+REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+
+
+# ------------------------------------------------------------------
 # Helper Functions
 # ------------------------------------------------------------------
 def generate_random_suffix(length: int = 5) -> str:
     """Generate a short random string of letters/digits."""
     chars = string.ascii_lowercase + string.digits
     return "".join(random.choices(chars, k=length))
+
+
+def job_redis_key(namespace: str, job_name: str) -> str:
+    """Generate a Redis key name for storing logs of a given Job."""
+    return f"job_logs::{namespace}::{job_name}"
 
 
 # ------------------------------------------------------------------
@@ -324,13 +340,13 @@ class JobDescribeResource:
 
 
 # ------------------------------------------------------------------
-# Falcon Resource: Logs endpoint for a Job
+# Falcon Resource: Logs endpoint for a Job (store/append in Redis)
 # ------------------------------------------------------------------
 class JobLogsResource:
-    """Returns the logs for all Pods of a Job."""
+    """Returns the aggregated logs for all Pods of a Job, while storing them in Redis."""
 
     def on_get(self, req: Request, resp: Response, namespace: str, job_name: str) -> None:
-        """Return the logs for all Pods of a Job."""
+        """Return the aggregated logs for all Pods of a Job, while storing them in Redis."""
         core_api = kubernetes.client.CoreV1Api()
         batch_api = kubernetes.client.BatchV1Api()
 
@@ -355,26 +371,42 @@ class JobLogsResource:
         pods_list = core_api.list_namespaced_pod(namespace, label_selector=label_selector)
 
         # Retrieve the logs for each Pod & container
-        logs = {}
+        pod_logs_list = []
         for pod in pods_list.items:
             pod_name = pod.metadata.name
-            pod_logs = {}
-
             # A Pod can have multiple containers; fetch logs for each
             for container in pod.spec.containers:
                 container_name = container.name
                 try:
-                    container_logs = core_api.read_namespaced_pod_log(
+                    pod_logs = core_api.read_namespaced_pod_log(
                         name=pod_name, namespace=namespace, container=container_name
                     )
-                    pod_logs[container_name] = container_logs
+                    pod_logs_list.append({"pod_name": pod_name, "container_name": container_name, "logs": pod_logs})
                 except kubernetes.client.exceptions.ApiException as log_e:
-                    pod_logs[container_name] = f"Error fetching logs: {str(log_e)}"
+                    pod_logs_list.append({"pod_name": pod_name, "container_name": container_name, "error": str(log_e)})
 
-            logs[pod_name] = pod_logs
+        # Store logs in Redis (as JSON string to preserve structure)
+        redis_key = job_redis_key(namespace, job_name)
+        if pod_logs_list:
+            # Convert the list to JSON string before storing
+            import json
+
+            logs_json = json.dumps(pod_logs_list)
+            redis_client.set(redis_key, logs_json)
+
+        # Retrieve logs from Redis
+        stored_logs = redis_client.get(redis_key)
+        if stored_logs is None:
+            logs_data = []
+        else:
+            try:
+                logs_data = json.loads(stored_logs.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                logs_data = []
+                logger.error(f"Failed to decode logs from Redis for key {redis_key}")
 
         resp.status = falcon.HTTP_200
-        resp.media = {"job": job_name, "namespace": namespace, "pods": logs}
+        resp.media = {"job": job_name, "namespace": namespace, "logs": logs_data}
 
 
 def handle_validation_error(req: Request, resp: Response, exception: ValidationError, params: Any) -> None:
@@ -434,7 +466,7 @@ def start_http_server(**kwargs: Any) -> None:
     describe_resource = JobDescribeResource()
     app.add_route("/jobs/{namespace}/{job_name}/describe", describe_resource)
 
-    # Route for aggregated logs
+    # Route for aggregated logs (with Redis)
     logs_resource = JobLogsResource()
     app.add_route("/jobs/{namespace}/{job_name}/logs", logs_resource)
 
