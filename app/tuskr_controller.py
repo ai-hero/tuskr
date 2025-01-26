@@ -343,10 +343,10 @@ class JobDescribeResource:
 # Falcon Resource: Logs endpoint for a Job (store/append in Redis)
 # ------------------------------------------------------------------
 class JobLogsResource:
-    """Returns the aggregated logs for all Pods of a Job, while storing them in Redis."""
+    """Returns the logs for all Pods of a Job."""
 
     def on_get(self, req: Request, resp: Response, namespace: str, job_name: str) -> None:
-        """Return the aggregated logs for all Pods of a Job, while storing them in Redis."""
+        """Return the logs for all Pods of a Job."""
         core_api = kubernetes.client.CoreV1Api()
         batch_api = kubernetes.client.BatchV1Api()
 
@@ -370,40 +370,27 @@ class JobLogsResource:
         label_selector = f"job-name={job_name}"
         pods_list = core_api.list_namespaced_pod(namespace, label_selector=label_selector)
 
-        # Retrieve the logs for each Pod & container, then store/append in Redis
-        aggregated_logs = ""
+        # Retrieve the logs for each Pod & container
+        logs = {}
         for pod in pods_list.items:
             pod_name = pod.metadata.name
+            pod_logs = {}
+
             # A Pod can have multiple containers; fetch logs for each
             for container in pod.spec.containers:
                 container_name = container.name
                 try:
-                    pod_logs = core_api.read_namespaced_pod_log(
+                    container_logs = core_api.read_namespaced_pod_log(
                         name=pod_name, namespace=namespace, container=container_name
                     )
-                    # Append to aggregator
-                    aggregated_logs += f"--- Logs for Pod: {pod_name}, Container: {container_name} ---\n{pod_logs}\n\n"
+                    pod_logs[container_name] = container_logs
                 except kubernetes.client.exceptions.ApiException as log_e:
-                    aggregated_logs += (
-                        f"--- Failed to get logs for Pod: {pod_name}, Container: {container_name}: {str(log_e)} ---\n\n"
-                    )
+                    pod_logs[container_name] = f"Error fetching logs: {str(log_e)}"
 
-        # Store logs in Redis (append to existing logs)
-        redis_key = job_redis_key(namespace, job_name)
-        if aggregated_logs:
-            # The Redis 'append' command can only work with raw bytes or strings,
-            # so we do .encode() if needed
-            redis_client.append(redis_key, aggregated_logs)
-
-        # Return the *entire* logs from Redis (including newly appended portion)
-        full_logs = redis_client.get(redis_key)
-        if full_logs is None:
-            full_logs_str = ""
-        else:
-            full_logs_str = full_logs.decode("utf-8", errors="replace")
+            logs[pod_name] = pod_logs
 
         resp.status = falcon.HTTP_200
-        resp.media = {"job": job_name, "namespace": namespace, "logs": full_logs_str}
+        resp.media = {"job": job_name, "namespace": namespace, "pods": logs}
 
 
 def handle_validation_error(req: Request, resp: Response, exception: ValidationError, params: Any) -> None:
