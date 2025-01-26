@@ -343,34 +343,16 @@ class JobDescribeResource:
 # Falcon Resource: Logs endpoint for a Job (store/append in Redis)
 # ------------------------------------------------------------------
 class JobLogsResource:
-    """Returns logs for all Pods of a Job with status checks."""
-
-    def has_running_or_completed_pods(self, pods_list: Any) -> bool:
-        """Check if any pods are running or completed."""
-        for pod in pods_list.items:
-            phase = pod.status.phase
-            if phase in ["Running", "Succeeded", "Failed"]:
-                return True
-        return False
+    """Returns the logs for all Pods of a Job."""
 
     def on_get(self, req: Request, resp: Response, namespace: str, job_name: str) -> None:
-        """Return logs for all Pods of a Job."""
+        """Return the logs for all Pods of a Job."""
         core_api = kubernetes.client.CoreV1Api()
         batch_api = kubernetes.client.BatchV1Api()
 
-        # Parse query parameters with defaults
-        follow = req.get_param_as_bool("follow", False)
-        since_seconds = req.get_param_as_int("since_seconds")
-        previous = req.get_param_as_bool("previous", False)
-        timestamps = req.get_param_as_bool("timestamps", True)
-        tail_lines = req.get_param_as_int("tail_lines", 100)
-        container = req.get_param("container")
-        include_events = req.get_param_as_bool("include_events", True)
-
-        # Check if Job exists and get its creation timestamp
+        # Check if Job exists first
         try:
-            job = batch_api.read_namespaced_job(name=job_name, namespace=namespace)
-            job_creation_time = job.metadata.creation_timestamp
+            batch_api.read_namespaced_job(name=job_name, namespace=namespace)
         except kubernetes.client.exceptions.ApiException as e:
             if e.status == 404:
                 msg = f"Job {job_name} not found in namespace {namespace}."
@@ -386,124 +368,29 @@ class JobLogsResource:
 
         # Find all Pods that belong to this job
         label_selector = f"job-name={job_name}"
-        try:
-            pods_list = core_api.list_namespaced_pod(namespace, label_selector=label_selector)
-        except kubernetes.client.exceptions.ApiException as e:
-            logger.exception("Failed to list pods")
-            resp.status = falcon.HTTP_500
-            resp.media = {"error": str(e)}
-            return
+        pods_list = core_api.list_namespaced_pod(namespace, label_selector=label_selector)
 
-        # If no pods are running/completed and streaming was requested, return 409 Conflict
-        if follow and not self.has_running_or_completed_pods(pods_list):
-            resp.status = falcon.HTTP_409
-            resp.media = {
-                "error": "No pods are running or completed yet",
-                "job_status": {
-                    "active": job.status.active,
-                    "succeeded": job.status.succeeded,
-                    "failed": job.status.failed,
-                },
-            }
-            return
-
-        # Gather logs for each pod/container
+        # Retrieve the logs for each Pod & container
         logs = {}
         for pod in pods_list.items:
             pod_name = pod.metadata.name
             pod_logs = {}
 
-            containers_to_check = [container] if container else [c.name for c in pod.spec.containers]
-
-            for container_name in containers_to_check:
+            # A Pod can have multiple containers; fetch logs for each
+            for container in pod.spec.containers:
+                container_name = container.name
                 try:
-                    # Stream logs if follow=True
-                    if follow:
-                        pod_logs[container_name] = core_api.read_namespaced_pod_log(
-                            name=pod_name,
-                            namespace=namespace,
-                            container=container_name,
-                            follow=True,
-                            timestamps=timestamps,
-                            _preload_content=False,
-                        )
-                    else:
-                        # Regular log fetch with pagination/filtering
-                        pod_logs[container_name] = core_api.read_namespaced_pod_log(
-                            name=pod_name,
-                            namespace=namespace,
-                            container=container_name,
-                            previous=previous,
-                            since_seconds=since_seconds,
-                            timestamps=timestamps,
-                            tail_lines=tail_lines,
-                        )
-                except kubernetes.client.exceptions.ApiException as log_e:
-                    if log_e.status == 404:
-                        pod_logs[container_name] = "Container logs not found (container may not have started yet)"
-                    else:
-                        pod_logs[container_name] = f"Error fetching logs: {str(log_e)}"
-
-            # Add pod status information
-            logs[pod_name] = {
-                "status": pod.status.phase,
-                "containers": pod_logs,
-                "start_time": pod.status.start_time.isoformat() if pod.status.start_time else None,
-            }
-
-        # Gather relevant events if requested
-        events = []
-        if include_events:
-            try:
-                # Get events for the job
-                job_events = core_api.list_namespaced_event(
-                    namespace=namespace,
-                    field_selector=f"involvedObject.kind=Job,involvedObject.name={job_name}",
-                ).items
-
-                # Get events for all pods
-                pod_events = core_api.list_namespaced_event(
-                    namespace=namespace,
-                    field_selector="involvedObject.kind=Pod",
-                    label_selector=label_selector,
-                ).items
-
-                # Combine and sort events
-                all_events = job_events + pod_events
-                events = [
-                    {
-                        "type": e.type,
-                        "reason": e.reason,
-                        "message": e.message,
-                        "count": e.count,
-                        "first_timestamp": e.first_timestamp.isoformat() if e.first_timestamp else None,
-                        "last_timestamp": e.last_timestamp.isoformat() if e.last_timestamp else None,
-                        "involved_object": {"kind": e.involved_object.kind, "name": e.involved_object.name},
-                    }
-                    for e in sorted(
-                        all_events, key=lambda x: x.last_timestamp or x.first_timestamp or job_creation_time
+                    container_logs = core_api.read_namespaced_pod_log(
+                        name=pod_name, namespace=namespace, container=container_name
                     )
-                ]
-            except kubernetes.client.exceptions.ApiException as e:
-                logger.exception("Failed to list events")
-                resp.status = falcon.HTTP_500
-                resp.media = {"error": str(e)}
-                return
+                    pod_logs[container_name] = container_logs
+                except kubernetes.client.exceptions.ApiException as log_e:
+                    pod_logs[container_name] = f"Error fetching logs: {str(log_e)}"
+
+            logs[pod_name] = pod_logs
 
         resp.status = falcon.HTTP_200
-        resp.media = {
-            "job": job_name,
-            "namespace": namespace,
-            "creation_time": job_creation_time.isoformat(),
-            "status": {
-                "active": job.status.active,
-                "succeeded": job.status.succeeded,
-                "failed": job.status.failed,
-                "completion_time": job.status.completion_time.isoformat() if job.status.completion_time else None,
-            },
-            "pods": logs,
-            "events": events if include_events else None,
-        }
+        resp.media = {"job": job_name, "namespace": namespace, "pods": logs}
 
 
 def handle_validation_error(req: Request, resp: Response, exception: ValidationError, params: Any) -> None:
