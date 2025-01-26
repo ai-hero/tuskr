@@ -23,7 +23,6 @@
 
 import json
 import logging
-import os
 import random
 import string
 import threading
@@ -35,7 +34,6 @@ from wsgiref.simple_server import make_server
 import falcon
 import kopf
 import kubernetes
-import redis  # type: ignore
 from falcon import Request, Response, media
 from pydantic import ValidationError
 
@@ -86,26 +84,12 @@ def delete_jobtemplate(body: Dict[str, Any], spec: Dict[str, Any], **kwargs: Any
 
 
 # ------------------------------------------------------------------
-# Redis setup
-# Adjust these if you have a different Redis connection
-# ------------------------------------------------------------------
-REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
-redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
-
-
-# ------------------------------------------------------------------
 # Helper Functions
 # ------------------------------------------------------------------
 def generate_random_suffix(length: int = 5) -> str:
     """Generate a short random string of letters/digits."""
     chars = string.ascii_lowercase + string.digits
     return "".join(random.choices(chars, k=length))
-
-
-def job_redis_key(namespace: str, job_name: str) -> str:
-    """Generate a Redis key name for storing logs of a given Job."""
-    return f"job_logs::{namespace}::{job_name}"
 
 
 # ------------------------------------------------------------------
@@ -340,7 +324,7 @@ class JobDescribeResource:
 
 
 # ------------------------------------------------------------------
-# Falcon Resource: Logs endpoint for a Job (store/append in Redis)
+# Falcon Resource: Logs endpoint for a Job
 # ------------------------------------------------------------------
 class JobLogsResource:
     """Returns the logs for all Pods of a Job."""
@@ -450,7 +434,7 @@ def start_http_server(**kwargs: Any) -> None:
     describe_resource = JobDescribeResource()
     app.add_route("/jobs/{namespace}/{job_name}/describe", describe_resource)
 
-    # Route for aggregated logs (with Redis)
+    # Route for aggregated logs
     logs_resource = JobLogsResource()
     app.add_route("/jobs/{namespace}/{job_name}/logs", logs_resource)
 
