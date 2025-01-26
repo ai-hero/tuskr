@@ -1,20 +1,45 @@
+# MIT License
+#
+# Copyright (c) 2025 A.I. Hero, Inc.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+"""The controller."""
+
+import json
+import logging
+import os
 import random
 import string
-import logging
-import json
 import threading
-import os
-
-import kopf
-import kubernetes
+import traceback
+from functools import partial
+from typing import Any, Dict
+from wsgiref.simple_server import make_server
 
 import falcon
-from wsgiref.simple_server import make_server
-from helpers.encoder import CustomJsonEncoder
+import kopf
+import kubernetes
+import redis  # type: ignore
+from falcon import Request, Response, media
+from pydantic import ValidationError
 
-
-# Redis client
-import redis
+from helpers.encoder import CustomJsonDecoder, CustomJsonEncoder
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -23,8 +48,9 @@ logger.setLevel(logging.INFO)
 # ------------------------------------------------------------------
 # Kopf Startup: Load Kubernetes config
 # ------------------------------------------------------------------
-@kopf.on.startup()
-def startup_fn(logger, **kwargs):
+@kopf.on.startup()  # type: ignore
+def startup_fn(logger: logging.Logger, **kwargs: Any) -> None:
+    """Load the Kubernetes configuration on startup."""
     logger.info("Tuskr controller is starting up.")
     # If running in the cluster:
     kubernetes.config.load_incluster_config()
@@ -35,22 +61,25 @@ def startup_fn(logger, **kwargs):
 # ------------------------------------------------------------------
 # Handlers for JobTemplate CRD
 # ------------------------------------------------------------------
-@kopf.on.create("tuskr.io", "v1alpha1", "jobtemplates")
-def create_jobtemplate(body, spec, **kwargs):
+@kopf.on.create("tuskr.io", "v1alpha1", "jobtemplates")  # type: ignore
+def create_jobtemplate(body: Dict[str, Any], spec: Dict[str, Any], **kwargs: Any) -> Dict[str, str]:
+    """Handle creation of a JobTemplate."""
     name = body["metadata"]["name"]
     logger.info(f"JobTemplate {name} was created with spec: {spec}")
     return {"message": f"Created JobTemplate {name}"}
 
 
-@kopf.on.update("tuskr.io", "v1alpha1", "jobtemplates")
-def update_jobtemplate(body, spec, **kwargs):
+@kopf.on.update("tuskr.io", "v1alpha1", "jobtemplates")  # type: ignore
+def update_jobtemplate(body: Dict[str, Any], spec: Dict[str, Any], **kwargs: Any) -> Dict[str, str]:
+    """Handle update of a JobTemplate."""
     name = body["metadata"]["name"]
     logger.info(f"JobTemplate {name} was updated with spec: {spec}")
     return {"message": f"Updated JobTemplate {name}"}
 
 
-@kopf.on.delete("tuskr.io", "v1alpha1", "jobtemplates")
-def delete_jobtemplate(body, spec, **kwargs):
+@kopf.on.delete("tuskr.io", "v1alpha1", "jobtemplates")  # type: ignore
+def delete_jobtemplate(body: Dict[str, Any], spec: Dict[str, Any], **kwargs: Any) -> Dict[str, str]:
+    """Handle deletion of a JobTemplate."""
     name = body["metadata"]["name"]
     logger.info(f"JobTemplate {name} was deleted.")
     return {"message": f"Deleted JobTemplate {name}"}
@@ -68,31 +97,25 @@ redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
 # ------------------------------------------------------------------
 # Helper Functions
 # ------------------------------------------------------------------
-def generate_random_suffix(length=5):
+def generate_random_suffix(length: int = 5) -> str:
     """Generate a short random string of letters/digits."""
     chars = string.ascii_lowercase + string.digits
     return "".join(random.choices(chars, k=length))
 
 
-def job_redis_key(namespace, job_name):
+def job_redis_key(namespace: str, job_name: str) -> str:
     """Generate a Redis key name for storing logs of a given Job."""
     return f"job_logs::{namespace}::{job_name}"
-
-
-# Create a custom Falcon JSON handler
-class CustomJSONHandler:
-    def serialize(self, media, content_type):
-        return json.dumps(media, cls=CustomJsonEncoder)
-
-    def deserialize(self, stream, content_type, content_length):
-        return json.loads(stream.read().decode("utf-8"))
 
 
 # ------------------------------------------------------------------
 # Falcon Resource: Launch a Job from a JobTemplate
 # ------------------------------------------------------------------
 class LaunchResource:
-    def on_post(self, req, resp):
+    """Launch a Job from a JobTemplate, with optional command/args overrides."""
+
+    def on_post(self, req: Request, resp: Response) -> None:
+        """Create a Job from a JobTemplate, with optional command/args overrides."""
         # Parse incoming JSON
         raw_body = req.stream.read(req.content_length or 0)
         if not raw_body:
@@ -201,10 +224,10 @@ class LaunchResource:
 # Falcon Resource: Basic GET/DELETE on existing Jobs
 # ------------------------------------------------------------------
 class JobResource:
-    def on_get(self, req, resp, namespace, job_name):
-        """
-        Retrieve details of a specific Kubernetes Job (raw JSON).
-        """
+    """Retrieve details of a specific Kubernetes Job (raw JSON)."""
+
+    def on_get(self, req: Request, resp: Response, namespace: str, job_name: str) -> None:
+        """Retrieve details of a specific Kubernetes Job (raw JSON)."""
         batch_api = kubernetes.client.BatchV1Api()
         try:
             job = batch_api.read_namespaced_job(name=job_name, namespace=namespace)
@@ -226,10 +249,8 @@ class JobResource:
         resp.status = falcon.HTTP_200
         resp.media = job_dict
 
-    def on_delete(self, req, resp, namespace, job_name):
-        """
-        Delete a specific Kubernetes Job (foreground propagation).
-        """
+    def on_delete(self, req: Request, resp: Response, namespace: str, job_name: str) -> None:
+        """Delete a specific Kubernetes Job (foreground propagation)."""
         batch_api = kubernetes.client.BatchV1Api()
         try:
             delete_resp = batch_api.delete_namespaced_job(
@@ -251,21 +272,20 @@ class JobResource:
                 return
 
         resp.status = falcon.HTTP_200
-        resp.media = {"message": f"Job {job_name} deleted.", "status": delete_resp.to_dict()}
+        resp.media = {
+            "message": f"Job {job_name} deleted.",
+            "status": delete_resp.to_dict(),
+        }
 
 
 # ------------------------------------------------------------------
 # Falcon Resource: "describe"-like endpoint for a Job
 # ------------------------------------------------------------------
 class JobDescribeResource:
-    """
-    Returns a "describe" style JSON that includes:
-      - The Job object
-      - The Pod(s) belonging to that Job
-      - The Events related to that Job
-    """
+    """Returns a detailed "describe"-like output for a Job, including Pods and Events."""
 
-    def on_get(self, req, resp, namespace, job_name):
+    def on_get(self, req: Request, resp: Response, namespace: str, job_name: str) -> None:
+        """Return a detailed "describe"-like output for a Job, including Pods and Events."""
         batch_api = kubernetes.client.BatchV1Api()
         core_api = kubernetes.client.CoreV1Api()
 
@@ -293,7 +313,8 @@ class JobDescribeResource:
         # 3) Retrieve events for the Job (and possibly for the pods)
         events_api = kubernetes.client.CoreV1Api()
         events_for_job = events_api.list_namespaced_event(
-            namespace=namespace, field_selector=f"involvedObject.kind=Job,involvedObject.name={job_name}"
+            namespace=namespace,
+            field_selector=f"involvedObject.kind=Job,involvedObject.name={job_name}",
         )
 
         # We can also gather Pod events if desired
@@ -301,7 +322,8 @@ class JobDescribeResource:
         for pod in pods_list.items:
             pod_name = pod.metadata.name
             ev = events_api.list_namespaced_event(
-                namespace=namespace, field_selector=f"involvedObject.kind=Pod,involvedObject.name={pod_name}"
+                namespace=namespace,
+                field_selector=f"involvedObject.kind=Pod,involvedObject.name={pod_name}",
             )
             pod_events.append({pod_name: [e.to_dict() for e in ev.items]})
 
@@ -321,15 +343,10 @@ class JobDescribeResource:
 # Falcon Resource: Logs endpoint for a Job (store/append in Redis)
 # ------------------------------------------------------------------
 class JobLogsResource:
-    """
-    Returns the aggregated logs for all Pods of a Job, while storing them in Redis.
-    On each request:
-      1) Retrieves the logs from each Pod container.
-      2) Appends them into Redis under a known key.
-      3) Returns the logs from Redis as a single string (or as a dict).
-    """
+    """Returns the aggregated logs for all Pods of a Job, while storing them in Redis."""
 
-    def on_get(self, req, resp, namespace, job_name):
+    def on_get(self, req: Request, resp: Response, namespace: str, job_name: str) -> None:
+        """Return the aggregated logs for all Pods of a Job, while storing them in Redis."""
         core_api = kubernetes.client.CoreV1Api()
         batch_api = kubernetes.client.BatchV1Api()
 
@@ -389,19 +406,50 @@ class JobLogsResource:
         resp.media = {"job": job_name, "namespace": namespace, "logs": full_logs_str}
 
 
+def handle_validation_error(req: Request, resp: Response, exception: ValidationError, params: Any) -> None:
+    """Handle Pydantic ValidationError exceptions."""
+    # Optionally log the exception details
+    logger.error(f"Validation error: {exception}")
+
+    # Set the HTTP status code to 422 Unprocessable Entity
+    resp.status = falcon.HTTP_422
+
+    # Prepare a detailed error response
+    resp.media = {
+        "title": "Unprocessable Entity",
+        "description": "The request contains invalid data.",
+        "errors": exception.errors(),
+    }
+
+
+def custom_handle_uncaught_exception(req: Request, resp: Response, exception: Exception, params: Any) -> None:
+    """Handle uncaught exceptions."""
+    traceback.print_exc()
+    resp.status = falcon.HTTP_500
+    resp.media = f"{exception}"
+
+
 # ------------------------------------------------------------------
 # Start Falcon server in Kopf
 # ------------------------------------------------------------------
-@kopf.on.startup()
-def start_http_server(**kwargs):
-    """
-    Spin up a simple Falcon HTTP server on a chosen port.
-    This will run in a separate thread alongside Kopf's event loop.
-    """
-    app = falcon.App(
-        media_type=falcon.MEDIA_JSON,
-        json_handler=CustomJSONHandler(),
+@kopf.on.startup()  # type: ignore
+def start_http_server(**kwargs: Any) -> None:
+    """Start the Falcon HTTP server."""
+    app = falcon.App()
+
+    app.add_error_handler(ValidationError, handle_validation_error)
+    app.add_error_handler(Exception, custom_handle_uncaught_exception)
+
+    # JSON Handler for the config
+    json_handler = media.JSONHandler(
+        dumps=partial(json.dumps, cls=CustomJsonEncoder, sort_keys=True),
+        loads=partial(json.loads, cls=CustomJsonDecoder),
     )
+    extra_handlers = {
+        "application/json": json_handler,
+    }
+    app.req_options.media_handlers.update(extra_handlers)
+    app.resp_options.media_handlers.update(extra_handlers)
 
     # Route for launching Jobs from JobTemplates
     launch_resource = LaunchResource()
@@ -419,7 +467,7 @@ def start_http_server(**kwargs):
     logs_resource = JobLogsResource()
     app.add_route("/jobs/{namespace}/{job_name}/logs", logs_resource)
 
-    def _run_server():
+    def _run_server() -> None:
         with make_server("", 8080, app) as httpd:
             logger.info("Falcon HTTP server running on port 8080...")
             httpd.serve_forever()

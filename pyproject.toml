@@ -11,3 +11,27 @@ dependencies = [
     "pymongo>=4.10.1",
     "redis>=5.2.1",
 ]
+dev-dependencies = [
+    "black",
+    "flake8",
+    "isort",
+    "mypy",
+    "pylint",
+    "pytest",
+    "ruff",
+]
+[tool.pytest.ini_options]
+addopts = "-vvv"
+testpaths = "src/tests"
+
+[tool.ruff]
+exclude = [".venv", ".git", "__pycache__", "build", "dist", "venv"]
+lint.select = ["D", "E", "F", "I", "W"]
+lint.ignore = []
+line-length = 120
+src = ["app"]
+
+[tool.mypy]
+files = ["app"]
+strict_optional = false
+warn_unused_ignores = false
