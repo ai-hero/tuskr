@@ -120,8 +120,8 @@ class LaunchResource:
             # Assuming input_file has 'filename' and 'content' attributes
             key = f"{job_name}/{input_file.filename}"
             redis_client.set(key, input_file.content)
-            # Store file list for this job
-            redis_client.sadd(f"{job_name}/files", input_file.filename)
+            # Store file list for this job for 1 day
+            redis_client.sadd(f"{job_name}/files", input_file.filename, ex=86400)
 
     def on_post(self, req: Request, resp: Response) -> None:
         """Create a Job from a JobTemplate, with optional command/args overrides."""
@@ -229,6 +229,8 @@ class LaunchResource:
                         for filename in $files; do
                             # Get file content and save it
                             redis-cli -h $REDIS_HOST GET "${JOB_NAME}/${filename}" > "/mnt/data/inputs/${filename}"
+                        # delete the file from redis
+                        redis-cli -h $REDIS_HOST DEL "${JOB_NAME}/${filename}"
                         done
                         """
                     ],
