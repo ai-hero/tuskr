@@ -243,9 +243,16 @@ class LaunchResource:
                     "env": [
                         {
                             "name": "REDIS_HOST",
-                            "valueFrom": {"configMapKeyRef": {"name": "redis-config", "key": "host"}},
+                            "value": REDIS_HOST,
                         },
-                        {"name": "JOB_NAME", "value": job_name},
+                        {
+                            "name": "REDIS_PORT",
+                            "value": str(REDIS_PORT),
+                        },
+                        {
+                            "name": "JOB_NAME",
+                            "value": job_name,
+                        },
                     ],
                     "volumeMounts": volume_mounts,
                 }
