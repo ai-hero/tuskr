@@ -127,7 +127,8 @@ class LaunchResource:
             key = f"{job_name}/{filename}"
             redis_client.set(key, content)
             # Store file list for this job for 1 hour
-            redis_client.sadd(f"{job_name}/files", filename, ex=3600)
+            redis_client.sadd(f"{job_name}/files", filename)
+            redis_client.expire(f"{job_name}/files", 3600)
 
     def on_post(self, req: Request, resp: Response) -> None:
         """Create a Job from a JobTemplate, with optional command/args overrides."""
