@@ -224,21 +224,26 @@ class LaunchResource:
             init_containers = [
                 {
                     "name": "input-setup",
-                    "image": "redis:latest",
+                    "image": "alpine",  # Using Alpine as base
                     "command": ["sh", "-c"],
                     "args": [
-                        """
-                        mkdir -p /mnt/data/inputs &&
-                        chmod 777 /mnt/data/inputs &&
-                        # Get list of files for this job
-                        files=$(redis-cli -h $REDIS_HOST SMEMBERS "${JOB_NAME}/files") &&
-                        for filename in $files; do
-                            # Get file content and save it
-                            redis-cli -h $REDIS_HOST GET "${JOB_NAME}/${filename}" > "/mnt/data/inputs/${filename}"
-                            # Delete the file from redis
-                            redis-cli -h $REDIS_HOST DEL "${JOB_NAME}/${filename}"
-                        done
-                        """
+                        "apk add --no-cache redis && "  # Install redis-cli
+                        "set -ex && "  # Exit on error, print commands
+                        "mkdir -p /mnt/data/inputs && "
+                        "chmod 777 /mnt/data/inputs && "
+                        'files=$(redis-cli -h $REDIS_HOST -p $REDIS_PORT SMEMBERS "${JOB_NAME}/files") && '
+                        'if [ -z "$files" ]; then '
+                        "  echo 'No files found in Redis' && exit 1; "
+                        "fi && "
+                        "for filename in $files; do "
+                        '  echo "Processing file: $filename" && '
+                        '  redis-cli -h $REDIS_HOST -p $REDIS_PORT GET "${JOB_NAME}/${filename}" > \
+"/mnt/data/inputs/${filename}" && '
+                        '  if [ ! -s "/mnt/data/inputs/${filename}" ]; then '
+                        '    echo "Failed to retrieve file: $filename" && exit 1; '
+                        "  fi && "
+                        '  redis-cli -h $REDIS_HOST -p $REDIS_PORT DEL "${JOB_NAME}/${filename}"; '
+                        "done"
                     ],
                     "env": [
                         {
