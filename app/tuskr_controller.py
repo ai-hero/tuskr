@@ -37,6 +37,7 @@ import kopf
 import kubernetes
 import redis  # type: ignore
 from falcon import Request, Response, media
+from falcon.media.multipart import BodyPart
 from pydantic import BaseModel, ValidationError
 
 from helpers.encoder import CustomJsonDecoder, CustomJsonEncoder
@@ -497,7 +498,7 @@ class LaunchJobModel(BaseModel):
     jobTemplate: Dict[str, Any]
     command: List[str] = []
     args: List[str] = []
-    inputs: List[media.MultipartField] = []
+    inputs: List[BodyPart] = []
 
 
 # ------------------------------------------------------------------
