@@ -37,7 +37,6 @@ import kopf
 import kubernetes
 import redis  # type: ignore
 from falcon import Request, Response, media
-from falcon.media.multipart import BodyPart
 from pydantic import BaseModel, ValidationError
 
 from helpers.encoder import CustomJsonDecoder, CustomJsonEncoder
@@ -115,20 +114,26 @@ def job_redis_key(namespace: str, job_name: str) -> str:
 class LaunchResource:
     """Launch a Job from a JobTemplate, with optional command/args overrides."""
 
-    def store_input_files(self, job_name: str, input_files: list[Any]) -> None:
-        """Store input files in Redis with job name prefix."""
-        for input_file in input_files:
-            # Assuming input_file has 'filename' and 'content' attributes
-            key = f"{job_name}/{input_file.filename}"
-            redis_client.set(key, input_file.content)
+    def store_input_files(self, job_name: str, input_files: Dict[str, str]) -> None:
+        """Store input files in Redis with job name prefix.
+
+        Args:
+        ----
+            job_name: Name of the job
+            input_files: Dictionary mapping filenames to their content
+
+        """
+        for filename, content in input_files.items():
+            key = f"{job_name}/{filename}"
+            redis_client.set(key, content)
             # Store file list for this job for 1 hour
-            redis_client.sadd(f"{job_name}/files", input_file.filename, ex=3600)
+            redis_client.sadd(f"{job_name}/files", filename, ex=3600)
 
     def on_post(self, req: Request, resp: Response) -> None:
         """Create a Job from a JobTemplate, with optional command/args overrides."""
         try:
             data = json.loads(req.get_param("data"))
-            input_files = req.get_param_as_list("inputs") or []
+            input_files = data.get("inputs", {})  # Now expecting a dictionary
         except Exception as e:
             resp.status = falcon.HTTP_400
             resp.media = {"error": f"Invalid request format: {str(e)}"}
@@ -147,7 +152,6 @@ class LaunchResource:
 
         # Create volume configuration for inputs
         volumes = [{"name": "inputs-volume", "emptyDir": {}}]
-
         volume_mounts = [{"name": "inputs-volume", "mountPath": "/mnt/data/inputs"}]
 
         # Retrieve the JobTemplate and modify its spec
@@ -230,8 +234,8 @@ class LaunchResource:
                         for filename in $files; do
                             # Get file content and save it
                             redis-cli -h $REDIS_HOST GET "${JOB_NAME}/${filename}" > "/mnt/data/inputs/${filename}"
-                        # delete the file from redis
-                        redis-cli -h $REDIS_HOST DEL "${JOB_NAME}/${filename}"
+                            # Delete the file from redis
+                            redis-cli -h $REDIS_HOST DEL "${JOB_NAME}/${filename}"
                         done
                         """
                     ],
@@ -498,12 +502,7 @@ class LaunchJobModel(BaseModel):
     jobTemplate: Dict[str, Any]
     command: List[str] = []
     args: List[str] = []
-    inputs: List[BodyPart] = []
-
-    class Config:
-        """Pydantic model configuration."""
-
-        arbitrary_types_allowed = True
+    inputs: Dict[str, str] = {}
 
 
 # ------------------------------------------------------------------
