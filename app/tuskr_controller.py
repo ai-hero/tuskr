@@ -29,7 +29,7 @@ import string
 import threading
 import traceback
 from functools import partial
-from typing import Any, Dict
+from typing import Any, Dict, List
 from wsgiref.simple_server import make_server
 
 import falcon
@@ -37,7 +37,7 @@ import kopf
 import kubernetes
 import redis  # type: ignore
 from falcon import Request, Response, media
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from helpers.encoder import CustomJsonDecoder, CustomJsonEncoder
 
@@ -430,6 +430,15 @@ def custom_handle_uncaught_exception(req: Request, resp: Response, exception: Ex
     traceback.print_exc()
     resp.status = falcon.HTTP_500
     resp.media = f"{exception}"
+
+
+class LaunchJobModel(BaseModel):
+    """Pydantic model for the LaunchResource POST request."""
+
+    jobTemplate: Dict[str, Any]
+    command: List[str] = []
+    args: List[str] = []
+    inputs: List[media.MultipartField] = []
 
 
 # ------------------------------------------------------------------
