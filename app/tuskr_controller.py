@@ -29,7 +29,7 @@ import string
 import threading
 import traceback
 from functools import partial
-from typing import Any, Dict
+from typing import Any, Dict, List
 from wsgiref.simple_server import make_server
 
 import falcon
@@ -37,7 +37,7 @@ import kopf
 import kubernetes
 import redis  # type: ignore
 from falcon import Request, Response, media
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from helpers.encoder import CustomJsonDecoder, CustomJsonEncoder
 
@@ -114,20 +114,29 @@ def job_redis_key(namespace: str, job_name: str) -> str:
 class LaunchResource:
     """Launch a Job from a JobTemplate, with optional command/args overrides."""
 
+    def store_input_files(self, job_name: str, input_files: Dict[str, str]) -> None:
+        """Store input files in Redis with job name prefix.
+
+        Args:
+        ----
+            job_name: Name of the job
+            input_files: Dictionary mapping filenames to their content
+
+        """
+        for filename, content in input_files.items():
+            key = f"{job_name}/{filename}"
+            redis_client.set(key, content)
+            # Store file list for this job for 1 hour
+            redis_client.sadd(f"{job_name}/files", filename)
+            redis_client.expire(f"{job_name}/files", 3600)
+
     def on_post(self, req: Request, resp: Response) -> None:
         """Create a Job from a JobTemplate, with optional command/args overrides."""
-        # Parse incoming JSON
-        raw_body = req.stream.read(req.content_length or 0)
-        if not raw_body:
-            resp.status = falcon.HTTP_400
-            resp.media = {"error": "No JSON body provided."}
-            return
-
         try:
-            data = json.loads(raw_body)
-        except json.JSONDecodeError:
+            data = req.media
+        except Exception as e:
             resp.status = falcon.HTTP_400
-            resp.media = {"error": "Invalid JSON."}
+            resp.media = {"error": f"Invalid request format: {str(e)}"}
             return
 
         jobtemplate_info = data.get("jobTemplate", {})
@@ -135,13 +144,18 @@ class LaunchResource:
         jobtemplate_namespace = jobtemplate_info.get("namespace")
         command_override = data.get("command")
         args_override = data.get("args")
+        input_files = data.get("inputs", {})
 
         if not jobtemplate_name or not jobtemplate_namespace:
             resp.status = falcon.HTTP_400
             resp.media = {"error": "Must provide 'jobTemplate.name' and 'jobTemplate.namespace'."}
             return
 
-        # Retrieve the JobTemplate from the specified namespace
+        # Create volume configuration for inputs
+        volumes = [{"name": "inputs-volume", "emptyDir": {}}]
+        volume_mounts = [{"name": "inputs-volume", "mountPath": "/mnt/data/inputs"}]
+
+        # Retrieve the JobTemplate and modify its spec
         crd_api = kubernetes.client.CustomObjectsApi()
         try:
             jobtemplate = crd_api.get_namespaced_custom_object(
@@ -164,7 +178,7 @@ class LaunchResource:
                 resp.media = {"error": str(e)}
                 return
 
-        # Extract the Kubernetes Job spec from the JobTemplate.
+        # Extract and modify the job spec
         job_spec_from_template = jobtemplate.get("spec", {}).get("jobSpec", {}).get("template", {})
         if not job_spec_from_template:
             msg = f"No 'spec.jobSpec.template' found in JobTemplate {jobtemplate_name}"
@@ -173,34 +187,97 @@ class LaunchResource:
             resp.media = {"error": msg}
             return
 
-        # Override containers if command/args provided
+        # Generate job name early as we need it for file storage
+        random_suffix = generate_random_suffix()
+        job_name = f"{jobtemplate_name}-{random_suffix}"
+
+        # Store input files in Redis if any
+        if input_files:
+            try:
+                self.store_input_files(job_name, input_files)
+            except Exception as e:
+                logger.exception("Failed to store input files in Redis.")
+                resp.status = falcon.HTTP_500
+                resp.media = {"error": f"Failed to store input files: {str(e)}"}
+                return
+
+        # Modify pod spec to include volumes and sidecars
         pod_spec = job_spec_from_template.get("spec", {})
         containers = pod_spec.get("containers", [])
+
         if containers:
+            # Add volume mounts to the first container
+            existing_mounts = containers[0].get("volumeMounts", [])
+            containers[0]["volumeMounts"] = existing_mounts + volume_mounts
+
             if command_override:
                 containers[0]["command"] = command_override
             if args_override:
                 containers[0]["args"] = args_override
 
-        # Construct the actual Job manifest
-        random_suffix = generate_random_suffix()
-        job_name = f"{jobtemplate_name}-{random_suffix}"
+        # Add volumes to pod spec
+        existing_volumes = pod_spec.get("volumes", [])
+        pod_spec["volumes"] = existing_volumes + volumes
+
+        # Create init container to handle input files
+        if input_files:
+            init_containers = [
+                {
+                    "name": "input-setup",
+                    "image": "alpine",  # Using Alpine as base
+                    "command": ["sh", "-c"],
+                    "args": [
+                        "apk add --no-cache redis && "  # Install redis-cli
+                        "set -ex && "  # Exit on error, print commands
+                        "mkdir -p /mnt/data/inputs && "
+                        "chmod 777 /mnt/data/inputs && "
+                        'files=$(redis-cli -h $REDIS_HOST -p $REDIS_PORT SMEMBERS "${JOB_NAME}/files") && '
+                        'if [ -z "$files" ]; then '
+                        "  echo 'No files found in Redis' && exit 1; "
+                        "fi && "
+                        "for filename in $files; do "
+                        '  echo "Processing file: $filename" && '
+                        '  redis-cli -h $REDIS_HOST -p $REDIS_PORT GET "${JOB_NAME}/${filename}" > \
+"/mnt/data/inputs/${filename}" && '
+                        '  if [ ! -s "/mnt/data/inputs/${filename}" ]; then '
+                        '    echo "Failed to retrieve file: $filename" && exit 1; '
+                        "  fi && "
+                        '  redis-cli -h $REDIS_HOST -p $REDIS_PORT DEL "${JOB_NAME}/${filename}"; '
+                        "done"
+                    ],
+                    "env": [
+                        {
+                            "name": "REDIS_HOST",
+                            "value": f"{REDIS_HOST}.tuskr.svc.cluster.local",
+                        },
+                        {
+                            "name": "REDIS_PORT",
+                            "value": str(REDIS_PORT),
+                        },
+                        {
+                            "name": "JOB_NAME",
+                            "value": job_name,
+                        },
+                    ],
+                    "volumeMounts": volume_mounts,
+                }
+            ]
+            pod_spec["initContainers"] = init_containers
+
+        # Construct the Job manifest
         target_namespace = jobtemplate_namespace
+
         job_body = {
             "apiVersion": "batch/v1",
             "kind": "Job",
             "metadata": {
                 "name": job_name,
                 "labels": {"jobtemplate": jobtemplate_name},
-                # Add TTL setting to automatically delete job after completion
-                "annotations": {
-                    "tuskr.io/ttl-seconds-after-finished": "900"  # 15 minutes = 900 seconds
-                },
+                "annotations": {"tuskr.io/ttl-seconds-after-finished": "900"},
             },
             "spec": {
                 "template": job_spec_from_template,
-                # Add TTL controller setting
-                "ttlSecondsAfterFinished": 900,  # 15 minutes
+                "ttlSecondsAfterFinished": 900,
             },
         }
 
@@ -217,7 +294,7 @@ class LaunchResource:
         msg = f"Created Job '{job_name}' in namespace '{target_namespace}' from template '{jobtemplate_name}'."
         logger.info(msg)
         resp.status = falcon.HTTP_201
-        resp.media = {"message": msg}
+        resp.media = {"message": msg, "job_name": job_name, "namespace": target_namespace}
 
 
 # ------------------------------------------------------------------
@@ -430,6 +507,15 @@ def custom_handle_uncaught_exception(req: Request, resp: Response, exception: Ex
     traceback.print_exc()
     resp.status = falcon.HTTP_500
     resp.media = f"{exception}"
+
+
+class LaunchJobModel(BaseModel):
+    """Pydantic model for the LaunchResource POST request."""
+
+    jobTemplate: Dict[str, Any]
+    command: List[str] = []
+    args: List[str] = []
+    inputs: Dict[str, str] = {}
 
 
 # ------------------------------------------------------------------
