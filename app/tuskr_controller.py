@@ -500,6 +500,11 @@ class LaunchJobModel(BaseModel):
     args: List[str] = []
     inputs: List[BodyPart] = []
 
+    class Config:
+        """Pydantic model configuration."""
+
+        arbitrary_types_allowed = True
+
 
 # ------------------------------------------------------------------
 # Start Falcon server in Kopf
