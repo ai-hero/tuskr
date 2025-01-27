@@ -248,7 +248,7 @@ class LaunchResource:
                     "env": [
                         {
                             "name": "REDIS_HOST",
-                            "value": REDIS_HOST,
+                            "value": f"{REDIS_HOST}.tuskr.svc.cluster.local",
                         },
                         {
                             "name": "REDIS_PORT",
