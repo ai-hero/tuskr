@@ -132,8 +132,7 @@ class LaunchResource:
     def on_post(self, req: Request, resp: Response) -> None:
         """Create a Job from a JobTemplate, with optional command/args overrides."""
         try:
-            data = json.loads(req.get_param("data"))
-            input_files = data.get("inputs", {})  # Now expecting a dictionary
+            data = req.media
         except Exception as e:
             resp.status = falcon.HTTP_400
             resp.media = {"error": f"Invalid request format: {str(e)}"}
@@ -144,6 +143,7 @@ class LaunchResource:
         jobtemplate_namespace = jobtemplate_info.get("namespace")
         command_override = data.get("command")
         args_override = data.get("args")
+        input_files = data.get("inputs", {})
 
         if not jobtemplate_name or not jobtemplate_namespace:
             resp.status = falcon.HTTP_400
