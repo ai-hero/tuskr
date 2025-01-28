@@ -199,8 +199,9 @@ class LaunchResource:
             },
             "spec": {
                 "template": job_spec_from_template,
-                # Add TTL controller setting
-                "ttlSecondsAfterFinished": 900,  # 15 minutes
+                "ttlSecondsAfterFinished": 900,  # 15 minutes cleanup
+                "backoffLimit": 0,  # No retries
+                "activeDeadlineSeconds": 900,  # 15 minutes timeout
             },
         }
 
