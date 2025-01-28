@@ -485,7 +485,7 @@ class JobLogsResource:
                 logger.error(f"Failed to decode logs from Redis for key {redis_key}")
 
         resp.status = falcon.HTTP_200
-        resp.media = {"job": job_name, "namespace": namespace, "logs": logs_data}
+        resp.media = logs_data
 
 
 def handle_validation_error(req: Request, resp: Response, exception: ValidationError, params: Any) -> None:
