@@ -278,6 +278,8 @@ class LaunchResource:
             "spec": {
                 "template": job_spec_from_template,
                 "ttlSecondsAfterFinished": 900,
+                "backoffLimit": 0,  # No retries
+                "activeDeadlineSeconds": 900,  # 15 minutes timeout
             },
         }
 
