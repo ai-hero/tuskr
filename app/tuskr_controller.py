@@ -33,6 +33,7 @@ from typing import Any, Dict, List
 from wsgiref.simple_server import make_server
 
 import falcon
+import httpx
 import kopf
 import kubernetes
 import redis  # type: ignore
@@ -85,6 +86,42 @@ def delete_jobtemplate(body: Dict[str, Any], spec: Dict[str, Any], **kwargs: Any
     return {"message": f"Deleted JobTemplate {name}"}
 
 
+@kopf.on.event("batch", "v1", "jobs")  # type: ignore
+def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> None:
+    """Watch for Job events and handle callbacks."""
+    job_obj = event.get("object")
+    if not job_obj:
+        return
+
+    # Skip if no terminal condition found
+    conditions = job_obj.get("status", {}).get("conditions", [])
+    is_terminal = any(
+        condition.get("type") in ("Complete", "Failed") and condition.get("status") == "True"
+        for condition in conditions
+    )
+    if not is_terminal:
+        return
+
+    # Check for and execute callback if configured
+    namespace = job_obj["metadata"]["namespace"]
+    job_name = job_obj["metadata"]["name"]
+    callback_key = f"job_callbacks::{namespace}::{job_name}"
+    callback_url = redis_client.get(callback_key)
+
+    if not callback_url:
+        return
+
+    try:
+        full_url = f"{callback_url.decode().rstrip('/')}/jobs/{job_name}"
+        with httpx.Client() as client:
+            response = client.post(full_url, json=job_obj, headers={"Content-Type": "application/json"})
+            response.raise_for_status()
+            redis_client.delete(callback_key)
+            logger.info(f"Successfully made callback for job {job_name}")
+    except Exception as e:
+        logger.error(f"Failed to make callback for job {job_name}: {str(e)}")
+
+
 # ------------------------------------------------------------------
 # Redis setup
 # Adjust these if you have a different Redis connection
@@ -129,6 +166,13 @@ class LaunchResource:
             # Store file list for this job for 1 hour
             redis_client.sadd(f"{job_name}/files", filename)
             redis_client.expire(f"{job_name}/files", 3600)
+
+    def store_callback_info(self, namespace: str, job_name: str, callback_url: str) -> None:
+        """Store callback information in Redis."""
+        key = f"job_callbacks::{namespace}::{job_name}"
+        redis_client.set(key, callback_url)
+        # Add to the set of jobs to observe
+        redis_client.sadd("jobs_to_observe", f"{namespace}::{job_name}")
 
     def on_post(self, req: Request, resp: Response) -> None:
         """Create a Job from a JobTemplate, with optional command/args overrides."""
@@ -295,6 +339,12 @@ class LaunchResource:
 
         msg = f"Created Job '{job_name}' in namespace '{target_namespace}' from template '{jobtemplate_name}'."
         logger.info(msg)
+
+        # Callbacks
+        callback_url = req.get_param("callback")
+        if callback_url:
+            self.store_callback_info(target_namespace, job_name, callback_url)
+
         resp.status = falcon.HTTP_201
         resp.media = {"message": msg, "job_name": job_name, "namespace": target_namespace}
 
