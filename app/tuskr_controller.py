@@ -88,23 +88,39 @@ def delete_jobtemplate(body: Dict[str, Any], spec: Dict[str, Any], **kwargs: Any
 
 @kopf.on.event("batch", "v1", "jobs")  # type: ignore
 def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> None:
-    """Watch for Job events and handle callbacks."""
+    """Watch for Job events and handle callbacks for all job states."""
     job_obj = event.get("object")
     if not job_obj:
         return
 
-    # Skip if no terminal condition found
-    conditions = job_obj.get("status", {}).get("conditions", [])
-    is_terminal = any(
-        condition.get("type") in ("Complete", "Failed") and condition.get("status") == "True"
-        for condition in conditions
-    )
-    if not is_terminal:
-        return
-
-    # Check for and execute callback if configured
     namespace = job_obj["metadata"]["namespace"]
     job_name = job_obj["metadata"]["name"]
+
+    # Determine job state
+    status = job_obj.get("status", {})
+    conditions = status.get("conditions", [])
+
+    # Default to UNKNOWN
+    current_state = "Unknown"
+
+    # Check terminal conditions first
+    for condition in conditions:
+        if condition.get("type") == "Complete" and condition.get("status") == "True":
+            current_state = "Succeeded"
+            break
+        elif condition.get("type") == "Failed" and condition.get("status") == "True":
+            current_state = "Failed"
+            break
+
+    # If not terminal, check other states
+    if current_state == "Unknown":
+        if status.get("active", 0) > 0:
+            current_state = "Running"
+        elif not conditions and not status.get("active"):
+            # No conditions and not active typically means pending
+            current_state = "Pending"
+
+    # Check for callback configuration
     callback_key = f"job_callbacks::{namespace}::{job_name}"
     callback_url = redis_client.get(callback_key)
 
@@ -112,14 +128,21 @@ def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> 
         return
 
     try:
+        # Add state information to the job object
+        job_obj["tuskr_state"] = current_state
+
         full_url = f"{callback_url.decode().rstrip('/')}/jobs/{job_name}"
         with httpx.Client() as client:
             response = client.post(full_url, json=job_obj, headers={"Content-Type": "application/json"})
             response.raise_for_status()
-            redis_client.delete(callback_key)
-            logger.info(f"Successfully made callback for job {job_name}")
+
+            # Only delete callback registration for terminal states
+            if current_state in ("Succeeded", "Failed"):
+                redis_client.delete(callback_key)
+
+            logger.info(f"Successfully made callback for job {job_name} in state {current_state}")
     except Exception as e:
-        logger.error(f"Failed to make callback for job {job_name}: {str(e)}")
+        logger.error(f"Failed to make callback for job {job_name} in state {current_state}: {str(e)}")
 
 
 # ------------------------------------------------------------------
