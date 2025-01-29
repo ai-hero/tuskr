@@ -373,7 +373,7 @@ class LaunchResource:
             },
             "spec": {
                 "template": job_spec_from_template,
-                "ttlSecondsAfterFinished": 900,  # 15 minutes cleanup
+                "ttlSecondsAfterFinished": 60 * 60 * 3,  # 3 hour cleanup
                 "backoffLimit": 0,  # No retries
             },
         }
