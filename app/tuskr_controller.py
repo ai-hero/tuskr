@@ -88,20 +88,20 @@ def delete_jobtemplate(body: Dict[str, Any], spec: Dict[str, Any], **kwargs: Any
 
 @kopf.on.event("batch", "v1", "jobs")  # type: ignore
 def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> None:
-    """Watch for Job events and handle callbacks for all job states."""
+    """Watch for Job events and handle callbacks for all job states, including launch failures."""
     job_obj = event.get("object")
     if not job_obj:
         return
-
     namespace = job_obj["metadata"]["namespace"]
     job_name = job_obj["metadata"]["name"]
 
-    # Determine job state
+    # Get status information
     status = job_obj.get("status", {})
     conditions = status.get("conditions", [])
 
     # Default to UNKNOWN
     current_state = "Unknown"
+    failure_reason = None
 
     # Check terminal conditions first
     for condition in conditions:
@@ -110,28 +110,53 @@ def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> 
             break
         elif condition.get("type") == "Failed" and condition.get("status") == "True":
             current_state = "Failed"
+            # Check for failure reason in condition message
+            failure_reason = condition.get("message")
             break
 
-    # If not terminal, check other states
+    # If not terminal, check other states and pod conditions
     if current_state == "Unknown":
         if status.get("active", 0) > 0:
             current_state = "Running"
         elif not conditions and not status.get("active"):
-            # No conditions and not active typically means pending
             current_state = "Pending"
+
+    # Check pods for additional failure information
+    pods = status.get("pods", {})
+    for pod_name, pod_status in pods.items():
+        container_statuses = pod_status.get("containerStatuses", [])
+        for container in container_statuses:
+            waiting = container.get("waiting", {})
+            if waiting:
+                reason = waiting.get("reason")
+                if reason in ["ImagePullBackOff", "ErrImagePull", "CrashLoopBackOff"]:
+                    current_state = "Failed"
+                    failure_reason = (
+                        f"Container failed to start: {reason} - {waiting.get('message', 'No message provided')}"
+                    )
+                    break
+
+        # Check pod conditions for other types of failures
+        pod_conditions = pod_status.get("conditions", [])
+        for condition in pod_conditions:
+            if condition.get("type") == "PodScheduled" and condition.get("status") == "False":
+                current_state = "Failed"
+                failure_reason = f"Pod scheduling failed: {condition.get('message', 'No message provided')}"
+                break
 
     # Check for callback configuration
     callback_key = f"job_callbacks::{namespace}::{job_name}"
     callback_url = redis_client.get(callback_key)
-
     if not callback_url:
         return
 
     try:
-        # Add state information to the job object
+        # Add state and failure information to the job object
         job_obj["tuskr_state"] = current_state
+        if failure_reason:
+            job_obj["tuskr_failure_reason"] = failure_reason
 
-        full_url = f"{callback_url.decode().rstrip('/')}/jobs/{job_name}"
+        full_url = f"{callback_url.decode().rstrip('/')}/jobs/{namespace}/{job_name}"
         with httpx.Client() as client:
             response = client.post(full_url, json=job_obj, headers={"Content-Type": "application/json"})
             response.raise_for_status()
@@ -140,7 +165,11 @@ def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> 
             if current_state in ("Succeeded", "Failed"):
                 redis_client.delete(callback_key)
 
-            logger.info(f"Successfully made callback for job {job_name} in state {current_state}")
+            log_message = f"Successfully made callback for job {job_name} in state {current_state}"
+            if failure_reason:
+                log_message += f" with reason: {failure_reason}"
+            logger.info(log_message)
+
     except Exception as e:
         logger.error(f"Failed to make callback for job {job_name} in state {current_state}: {str(e)}")
 
@@ -344,7 +373,7 @@ class LaunchResource:
             },
             "spec": {
                 "template": job_spec_from_template,
-                "ttlSecondsAfterFinished": 900,  # 15 minutes cleanup
+                "ttlSecondsAfterFinished": 60 * 60 * 3,  # 3 hour cleanup
                 "backoffLimit": 0,  # No retries
             },
         }
