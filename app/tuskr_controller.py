@@ -441,7 +441,7 @@ fi"""
         if callback_url:
             headers = {}
             if env_vars.get("Authorization", ""):
-                headers["Authorization"] = f"Bearer {env_vars['Authorization']}"
+                headers["Authorization"] = env_vars["Authorization"]
             self.store_callback_info(target_namespace, job_name, callback_url, headers)
 
         resp.status = falcon.HTTP_201
