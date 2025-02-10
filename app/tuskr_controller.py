@@ -146,8 +146,8 @@ def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> 
 
     # Check for callback configuration
     callback_key = f"job_callbacks::{namespace}::{job_name}"
-    callback_url = redis_client.get(callback_key)
-    if not callback_url:
+    callback_info = redis_client.get(callback_key)
+    if not callback_info:
         return
 
     try:
@@ -156,9 +156,13 @@ def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> 
         if failure_reason:
             job_obj["tuskr_failure_reason"] = failure_reason
 
+        callback_url = callback_info.get("url")
+        headers = callback_info.get("headers", {})
+        headers["Content-Type"] = "application/json"
+
         full_url = f"{callback_url.decode().rstrip('/')}/jobs/{namespace}/{job_name}"
         with httpx.Client() as client:
-            response = client.post(full_url, json=job_obj, headers={"Content-Type": "application/json"})
+            response = client.post(full_url, json=job_obj, headers=headers)
             response.raise_for_status()
 
             # Only delete callback registration for terminal states
@@ -226,10 +230,16 @@ class LaunchResource:
             redis_client.sadd(f"{job_name}/files", filename)
             redis_client.expire(f"{job_name}/files", 3600)
 
-    def store_callback_info(self, namespace: str, job_name: str, callback_url: str) -> None:
+    def store_callback_info(
+        self,
+        namespace: str,
+        job_name: str,
+        callback_url: str,
+        headers: dict[str, str],
+    ) -> None:
         """Store callback information in Redis."""
         key = f"job_callbacks::{namespace}::{job_name}"
-        redis_client.set(key, callback_url)
+        redis_client.set(key, {"url": callback_url, "headers": headers})
         # Add to the set of jobs to observe
         redis_client.sadd("jobs_to_observe", f"{namespace}::{job_name}")
 
@@ -429,7 +439,10 @@ fi"""
         # Callbacks
         callback_url = req.get_param("callback")
         if callback_url:
-            self.store_callback_info(target_namespace, job_name, callback_url)
+            headers = {}
+            if env_vars.get("AUTH_TOKEN", ""):
+                headers["Authorization"] = f"Bearer {env_vars['AUTH_TOKEN']}"
+            self.store_callback_info(target_namespace, job_name, callback_url, headers)
 
         resp.status = falcon.HTTP_201
         resp.media = {"message": msg, "job_name": job_name, "namespace": target_namespace}
