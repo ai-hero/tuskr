@@ -149,6 +149,8 @@ def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> 
     callback_info = redis_client.get(callback_key)
     if not callback_info:
         return
+    else:
+        callback_info = json.loads(callback_info)
 
     try:
         # Add state and failure information to the job object
@@ -239,7 +241,7 @@ class LaunchResource:
     ) -> None:
         """Store callback information in Redis."""
         key = f"job_callbacks::{namespace}::{job_name}"
-        redis_client.set(key, {"url": callback_url, "headers": headers})
+        redis_client.set(key, json.dumps({"url": callback_url, "headers": headers}))
         # Add to the set of jobs to observe
         redis_client.sadd("jobs_to_observe", f"{namespace}::{job_name}")
 
