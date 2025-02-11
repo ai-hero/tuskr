@@ -360,33 +360,36 @@ class LaunchResource:
                     "command": ["sh", "-c"],
                     "args": [
                         """apk add --no-cache redis
-set -ex
-mkdir -p /mnt/data/inputs
-chmod 777 /mnt/data/inputs
-if redis-cli -h $REDIS_HOST -p $REDIS_PORT EXISTS "${JOB_NAME}/files"; then
-    files=$(redis-cli -h $REDIS_HOST -p $REDIS_PORT SMEMBERS "${JOB_NAME}/files")
-    for filename in $files; do
-    echo "Processing file: $filename"
-    redis-cli -h $REDIS_HOST -p $REDIS_PORT GET "${JOB_NAME}/${filename}" > "/mnt/data/inputs/${filename}"
-    if [ ! -s "/mnt/data/inputs/${filename}" ]; then
-        echo "Failed to retrieve file: $filename" && exit 1
-    fi
-    redis-cli -h $REDIS_HOST -p $REDIS_PORT DEL "${JOB_NAME}/${filename}"
-    done
-fi
-touch /mnt/data/inputs/.env
-chmod 600 /mnt/data/inputs/.env
-if redis-cli -h $REDIS_HOST -p $REDIS_PORT EXISTS "${JOB_NAME}/env_vars"; then
-    echo "Processing environment variables"
-    env_vars=$(redis-cli -h $REDIS_HOST -p $REDIS_PORT HGETALL "${JOB_NAME}/env_vars")
-    if [ ! -z "$env_vars" ]; then
-    echo "$env_vars" | while read -r key; do
-        read -r value
-        echo "export ${key}=\\"${value}\\"" >> /mnt/data/inputs/.env
-    done
-    redis-cli -h $REDIS_HOST -p $REDIS_PORT DEL "${JOB_NAME}/env_vars"
-    fi
-fi"""
+            set -ex
+            mkdir -p /mnt/data/inputs
+            chmod 777 /mnt/data/inputs
+            if redis-cli -h $REDIS_HOST -p $REDIS_PORT EXISTS "${JOB_NAME}/files"; then
+                files=$(redis-cli -h $REDIS_HOST -p $REDIS_PORT SMEMBERS "${JOB_NAME}/files")
+                for filename in $files; do
+                echo "Processing file: $filename"
+                redis-cli -h $REDIS_HOST -p $REDIS_PORT GET "${JOB_NAME}/${filename}" > "/mnt/data/inputs/${filename}"
+                if [ ! -s "/mnt/data/inputs/${filename}" ]; then
+                    echo "Failed to retrieve file: $filename" && exit 1
+                fi
+                redis-cli -h $REDIS_HOST -p $REDIS_PORT DEL "${JOB_NAME}/${filename}"
+                done
+            fi
+            touch /mnt/data/inputs/.env
+            if redis-cli -h $REDIS_HOST -p $REDIS_PORT EXISTS "${JOB_NAME}/env_vars"; then
+                echo "Processing environment variables"
+                env_vars=$(redis-cli -h $REDIS_HOST -p $REDIS_PORT HGETALL "${JOB_NAME}/env_vars")
+                if [ ! -z "$env_vars" ]; then
+                echo "$env_vars" | while read -r key; do
+                    read -r value
+                    echo "export ${key}=\\"${value}\\"" >> /mnt/data/inputs/.env
+                done
+                redis-cli -h $REDIS_HOST -p $REDIS_PORT DEL "${JOB_NAME}/env_vars"
+                fi
+            fi
+            # Set permissions for all files after creation
+            chmod -R 644 /mnt/data/inputs/*
+            chmod 644 /mnt/data/inputs/.env
+            """
                     ],
                     "env": [
                         {
