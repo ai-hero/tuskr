@@ -162,7 +162,7 @@ def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> 
         headers = callback_info.get("headers", {})
         headers["Content-Type"] = "application/json"
 
-        full_url = f"{callback_url.decode().rstrip('/')}/jobs/{namespace}/{job_name}"
+        full_url = f"{callback_url.rstrip('/')}/jobs/{namespace}/{job_name}"
         with httpx.Client() as client:
             response = client.post(full_url, json=job_obj, headers=headers)
             response.raise_for_status()
@@ -177,6 +177,7 @@ def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> 
             logger.info(log_message)
 
     except Exception as e:
+        traceback.print_exc()
         logger.error(f"Failed to make callback for job {job_name} in state {current_state}: {str(e)}")
 
 
