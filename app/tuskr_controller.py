@@ -440,8 +440,8 @@ fi"""
         callback_url = req.get_param("callback")
         if callback_url:
             headers = {}
-            if env_vars.get("Authorization", ""):
-                headers["Authorization"] = env_vars["Authorization"]
+            if env_vars.get("AUTHORIZATION", ""):
+                headers["Authorization"] = env_vars["AUTHORIZATION"]
             self.store_callback_info(target_namespace, job_name, callback_url, headers)
 
         resp.status = falcon.HTTP_201
