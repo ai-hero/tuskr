@@ -146,9 +146,11 @@ def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> 
 
     # Check for callback configuration
     callback_key = f"job_callbacks::{namespace}::{job_name}"
-    callback_url = redis_client.get(callback_key)
-    if not callback_url:
+    callback_info = redis_client.get(callback_key)
+    if not callback_info:
         return
+    else:
+        callback_info = json.loads(callback_info)
 
     try:
         # Add state and failure information to the job object
@@ -156,9 +158,13 @@ def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> 
         if failure_reason:
             job_obj["tuskr_failure_reason"] = failure_reason
 
-        full_url = f"{callback_url.decode().rstrip('/')}/jobs/{namespace}/{job_name}"
+        callback_url = callback_info.get("url")
+        headers = callback_info.get("headers", {})
+        headers["Content-Type"] = "application/json"
+
+        full_url = f"{callback_url.rstrip('/')}/jobs/{namespace}/{job_name}"
         with httpx.Client() as client:
-            response = client.post(full_url, json=job_obj, headers={"Content-Type": "application/json"})
+            response = client.post(full_url, json=job_obj, headers=headers)
             response.raise_for_status()
 
             # Only delete callback registration for terminal states
@@ -171,6 +177,7 @@ def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> 
             logger.info(log_message)
 
     except Exception as e:
+        traceback.print_exc()
         logger.error(f"Failed to make callback for job {job_name} in state {current_state}: {str(e)}")
 
 
@@ -203,6 +210,13 @@ def job_redis_key(namespace: str, job_name: str) -> str:
 class LaunchResource:
     """Launch a Job from a JobTemplate, with optional command/args overrides."""
 
+    def store_env_vars(self, job_name: str, env_vars: Dict[str, str]) -> None:
+        """Store environment variables in Redis."""
+        if env_vars:
+            env_key = f"{job_name}/env_vars"
+            redis_client.hmset(env_key, env_vars)
+            redis_client.expire(env_key, 3600)  # 1 hour expiry
+
     def store_input_files(self, job_name: str, input_files: Dict[str, str]) -> None:
         """Store input files in Redis with job name prefix.
 
@@ -219,10 +233,16 @@ class LaunchResource:
             redis_client.sadd(f"{job_name}/files", filename)
             redis_client.expire(f"{job_name}/files", 3600)
 
-    def store_callback_info(self, namespace: str, job_name: str, callback_url: str) -> None:
+    def store_callback_info(
+        self,
+        namespace: str,
+        job_name: str,
+        callback_url: str,
+        headers: dict[str, str],
+    ) -> None:
         """Store callback information in Redis."""
         key = f"job_callbacks::{namespace}::{job_name}"
-        redis_client.set(key, callback_url)
+        redis_client.set(key, json.dumps({"url": callback_url, "headers": headers}))
         # Add to the set of jobs to observe
         redis_client.sadd("jobs_to_observe", f"{namespace}::{job_name}")
 
@@ -240,7 +260,6 @@ class LaunchResource:
         jobtemplate_namespace = jobtemplate_info.get("namespace")
         command_override = data.get("command")
         args_override = data.get("args")
-        input_files = data.get("inputs", {})
 
         if not jobtemplate_name or not jobtemplate_namespace:
             resp.status = falcon.HTTP_400
@@ -287,7 +306,19 @@ class LaunchResource:
         random_suffix = generate_random_suffix()
         job_name = f"{jobtemplate_name}-{random_suffix}"
 
+        # Store environment variables in Redis if any
+        env_vars = data.get("env_vars", {})
+        if env_vars:
+            try:
+                self.store_env_vars(job_name, env_vars)
+            except Exception as e:
+                logger.exception("Failed to store environment variables in Redis.")
+                resp.status = falcon.HTTP_500
+                resp.media = {"error": f"Failed to store environment variables: {str(e)}"}
+                return
+
         # Store input files in Redis if any
+        input_files = data.get("inputs", {})
         if input_files:
             try:
                 self.store_input_files(job_name, input_files)
@@ -306,40 +337,60 @@ class LaunchResource:
             existing_mounts = containers[0].get("volumeMounts", [])
             containers[0]["volumeMounts"] = existing_mounts + volume_mounts
 
-            if command_override:
-                containers[0]["command"] = command_override
-            if args_override:
-                containers[0]["args"] = args_override
+            # Modify the container command to source environment variables
+            original_command = command_override or containers[0].get("command", [])
+            original_args = args_override or containers[0].get("args", [])
+
+            # Wrap the command to source the env file if it exists
+            containers[0]["command"] = ["sh", "-c"]
+            containers[0]["args"] = [
+                'if [ -f "/mnt/data/inputs/.env" ]; then . "/mnt/data/inputs/.env"; fi && '
+                f"{' '.join(original_command)} {' '.join(original_args)}"
+            ]
 
         # Add volumes to pod spec
         existing_volumes = pod_spec.get("volumes", [])
         pod_spec["volumes"] = existing_volumes + volumes
 
         # Create init container to handle input files
-        if input_files:
+        if input_files or env_vars:
             init_containers = [
                 {
                     "name": "input-setup",
-                    "image": "alpine",  # Using Alpine as base
+                    "image": "alpine",
                     "command": ["sh", "-c"],
                     "args": [
-                        "apk add --no-cache redis && "  # Install redis-cli
-                        "set -ex && "  # Exit on error, print commands
-                        "mkdir -p /mnt/data/inputs && "
-                        "chmod 777 /mnt/data/inputs && "
-                        'files=$(redis-cli -h $REDIS_HOST -p $REDIS_PORT SMEMBERS "${JOB_NAME}/files") && '
-                        'if [ -z "$files" ]; then '
-                        "  echo 'No files found in Redis' && exit 1; "
-                        "fi && "
-                        "for filename in $files; do "
-                        '  echo "Processing file: $filename" && '
-                        '  redis-cli -h $REDIS_HOST -p $REDIS_PORT GET "${JOB_NAME}/${filename}" > \
-"/mnt/data/inputs/${filename}" && '
-                        '  if [ ! -s "/mnt/data/inputs/${filename}" ]; then '
-                        '    echo "Failed to retrieve file: $filename" && exit 1; '
-                        "  fi && "
-                        '  redis-cli -h $REDIS_HOST -p $REDIS_PORT DEL "${JOB_NAME}/${filename}"; '
-                        "done"
+                        """apk add --no-cache redis
+            set -ex
+            mkdir -p /mnt/data/inputs
+            chmod 777 /mnt/data/inputs
+            if redis-cli -h $REDIS_HOST -p $REDIS_PORT EXISTS "${JOB_NAME}/files"; then
+                files=$(redis-cli -h $REDIS_HOST -p $REDIS_PORT SMEMBERS "${JOB_NAME}/files")
+                for filename in $files; do
+                echo "Processing file: $filename"
+                redis-cli -h $REDIS_HOST -p $REDIS_PORT GET "${JOB_NAME}/${filename}" > "/mnt/data/inputs/${filename}"
+                if [ ! -s "/mnt/data/inputs/${filename}" ]; then
+                    echo "Failed to retrieve file: $filename" && exit 1
+                fi
+                redis-cli -h $REDIS_HOST -p $REDIS_PORT DEL "${JOB_NAME}/${filename}"
+                done
+            fi
+            touch /mnt/data/inputs/.env
+            if redis-cli -h $REDIS_HOST -p $REDIS_PORT EXISTS "${JOB_NAME}/env_vars"; then
+                echo "Processing environment variables"
+                env_vars=$(redis-cli -h $REDIS_HOST -p $REDIS_PORT HGETALL "${JOB_NAME}/env_vars")
+                if [ ! -z "$env_vars" ]; then
+                echo "$env_vars" | while read -r key; do
+                    read -r value
+                    echo "export ${key}=\\"${value}\\"" >> /mnt/data/inputs/.env
+                done
+                redis-cli -h $REDIS_HOST -p $REDIS_PORT DEL "${JOB_NAME}/env_vars"
+                fi
+            fi
+            # Set permissions for all files after creation
+            chmod -R 644 /mnt/data/inputs/*
+            chmod 644 /mnt/data/inputs/.env
+            """
                     ],
                     "env": [
                         {
@@ -394,7 +445,10 @@ class LaunchResource:
         # Callbacks
         callback_url = req.get_param("callback")
         if callback_url:
-            self.store_callback_info(target_namespace, job_name, callback_url)
+            headers = {}
+            if env_vars.get("AUTHORIZATION", ""):
+                headers["Authorization"] = env_vars["AUTHORIZATION"]
+            self.store_callback_info(target_namespace, job_name, callback_url, headers)
 
         resp.status = falcon.HTTP_201
         resp.media = {"message": msg, "job_name": job_name, "namespace": target_namespace}
@@ -619,6 +673,7 @@ class LaunchJobModel(BaseModel):
     command: List[str] = []
     args: List[str] = []
     inputs: Dict[str, str] = {}
+    env_vars: Dict[str, str] = {}  # Add this for env vars
 
 
 # ------------------------------------------------------------------
