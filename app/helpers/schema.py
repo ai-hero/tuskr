@@ -20,16 +20,17 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Main module of the application."""
+"""Schema for launching a job."""
 
-import kopf
+from typing import Any, Dict, List
 
-
-def main() -> None:
-    """Start the application."""
-    kopf.configure(verbose=True)
-    kopf.run()
+from pydantic import BaseModel
 
 
-if __name__ == "__main__":
-    main()
+class LaunchJobModel(BaseModel):
+    """Schema for launching a job."""
+
+    jobTemplate: Dict[str, Any]
+    command: List[str] = []
+    args: List[str] = []
+    inputs: Dict[str, str] = {}
