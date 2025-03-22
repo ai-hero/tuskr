@@ -206,6 +206,7 @@ class LaunchResource:
                     {"name": "TUSKR_JOB_TOKEN", "value": token},
                 ],
                 "volumeMounts": [{"name": "inputs-volume", "mountPath": "/mnt/data/inputs"}],
+                "securityContext": {"runAsUser": 1000},  # run as non-root user 'user'
             }
         ]
         pod_spec["initContainers"] = init_containers
@@ -264,6 +265,7 @@ class LaunchResource:
                 {"name": "TUSKR_JOB_TOKEN", "value": token},
             ],
             "volumeMounts": [{"name": "outputs-volume", "mountPath": "/mnt/data/outputs"}],
+            "securityContext": {"runAsUser": 1000},  # run as non-root user 'user'
         }
         containers.append(sidecar)
         pod_spec["containers"] = containers
