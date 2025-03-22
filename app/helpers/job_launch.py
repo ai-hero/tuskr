@@ -48,7 +48,8 @@ class LaunchResource:
     2) It generates a unique job_name (templateName + random suffix).
     3) It stores environment variables and inputs in Redis under a "context" key.
     4) It injects an init container into the Job's spec to fetch context data (env_vars/inputs).
-    5) It injects a sidecar container to POST output files back to the same context endpoint.
+    5) It injects a sidecar container that waits until all non-"playout-" containers terminate,
+       then gathers/post outputs back to the context endpoint.
     6) Finally, it creates the Job in the specified namespace.
     """
 
@@ -140,7 +141,7 @@ class LaunchResource:
         pod_spec["volumes"] = pod_spec.get("volumes", []) + volumes
 
         # 2) If there's at least one container, override command/args if provided,
-        #    and inject the TUSKR_JOB_TOKEN env var, plus mount volumes.
+        #    inject TUSKR_JOB_TOKEN env var, plus mount volumes.
         if containers:
             if command_override:
                 containers[0]["command"] = command_override
@@ -163,7 +164,7 @@ class LaunchResource:
         # 3) Create an init container that fetches the context (env_vars + inputs) from the API
         init_containers = [
             {
-                "name": "init-fetch-context",
+                "name": "playout-init",
                 "image": "alpine:3.17",
                 "command": ["sh", "-c"],
                 "args": [
@@ -211,10 +212,10 @@ class LaunchResource:
         ]
         pod_spec["initContainers"] = init_containers
 
-        # 4) Create a sidecar container that waits for main container to finish
-        #    (detected by e.g. /mnt/data/outputs/done) and then POSTs them back to context.
+        # 4) Create a sidecar container that polls for all non-"playout-" containers to terminate,
+        #    then gathers/post output files back to the context endpoint.
         sidecar = {
-            "name": "post-outputs",
+            "name": "playout-sidecar",
             "image": "alpine:3.17",
             "command": ["sh", "-c"],
             "args": [
@@ -223,39 +224,67 @@ class LaunchResource:
                 chown -R 1000:1000 /mnt/data
                 apk add --no-cache curl jq coreutils
 
-                echo "Sidecar waiting for the main container to produce /mnt/data/outputs/done..."
-                while [ ! -f /mnt/data/outputs/done ]; do
-                  sleep 0.23
-                done
+                echo "Sidecar checking if all non-'playout-' containers are done..."
+                while true; do
+                  # Fetch pod details from K8s API
+                  curl -s \
+                    -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+                    --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+                    "https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}/api/v1/namespaces/${NAMESPACE}/" \
+                    "pods/${POD_NAME}" \
+                    > /tmp/pod.json
 
-                echo "Main container done. Gathering output files..."
+                  # Count how many containers are *not* terminated, ignoring those whose
+                  # name starts with 'playout-'.
+                  NOT_TERMINATED_COUNT=$(jq -r '
+                    [
+                      .status.containerStatuses[]
+                      | select(.name | startswith("playout-") | not)
+                      | .state.terminated
+                    ]
+                    | map(select(. == null))
+                    | length
+                  ' /tmp/pod.json)
 
-                # Build JSON with base64-encoded files
-                cat <<EOF > /tmp/out.json
-                {
-                  "outputs": {
-                EOF
-
-                first=true
-                for out_file in $(ls /mnt/data/outputs | grep -v '^done$'); do
-                  encoded=$(base64 /mnt/data/outputs/$out_file | tr -d '\\n')
-                  if [ "$first" = true ]; then
-                    echo "    \\"$out_file\\": \\"$encoded\\"" >> /tmp/out.json
-                    first=false
-                  else
-                    echo "    ,\\"$out_file\\": \\"$encoded\\"" >> /tmp/out.json
+                  if [ "$NOT_TERMINATED_COUNT" -eq 0 ]; then
+                    echo "All non-playout containers have terminated."
+                    break
                   fi
+
+                  sleep 2
                 done
 
-                cat <<EOF2 >> /tmp/out.json
+                echo "Main/user containers terminated. Gathering output files..."
+
+                if [ -d /mnt/data/outputs ] && [ "$(ls -A /mnt/data/outputs | grep -v '^done$')" ]; then
+                  cat <<EOF > /tmp/out.json
+                  {
+                    "outputs": {
+EOF
+
+                  first=true
+                  for out_file in $(ls /mnt/data/outputs | grep -v '^done$'); do
+                    encoded=$(base64 /mnt/data/outputs/$out_file | tr -d '\\n')
+                    if [ "$first" = true ]; then
+                      echo "    \\"$out_file\\": \\"$encoded\\"" >> /tmp/out.json
+                      first=false
+                    else
+                      echo "    ,\\"$out_file\\": \\"$encoded\\"" >> /tmp/out.json
+                    fi
+                  done
+
+                  cat <<EOF2 >> /tmp/out.json
+                    }
                   }
-                }
-                EOF2
+EOF2
+                else
+                  echo '{"outputs": {}}' > /tmp/out.json
+                fi
 
                 echo "Posting outputs back to context..."
                 curl -v -X POST -H "Content-Type: application/json" \
                      -d @/tmp/out.json \
-                     "http://tuskr-controller.tuskr.svc.cluster.local:8080/jobs/$NAMESPACE/$JOB_NAME/context?token=$TUSKR_JOB_TOKEN"
+                     "http://tuskr-controller.tuskr.svc.cluster.local:8080/jobs/${NAMESPACE}/${JOB_NAME}/context?token=${TUSKR_JOB_TOKEN}"
 
                 echo "Sidecar post complete. Exiting..."
                 """
@@ -264,6 +293,7 @@ class LaunchResource:
                 {"name": "NAMESPACE", "value": jobtemplate_namespace},
                 {"name": "JOB_NAME", "value": job_name},
                 {"name": "TUSKR_JOB_TOKEN", "value": token},
+                {"name": "POD_NAME", "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}},
             ],
             "volumeMounts": [{"name": "outputs-volume", "mountPath": "/mnt/data/outputs"}],
         }
@@ -280,7 +310,6 @@ class LaunchResource:
                 "annotations": {"tuskr.io/ttl-seconds-after-finished": "900"},
             },
             "spec": {
-                # This is the Job spec using the updated Pod template
                 "template": job_spec_from_template,
                 "ttlSecondsAfterFinished": 60 * 60 * 3,  # 3-hour cleanup
                 "backoffLimit": 0,  # No retries
@@ -302,6 +331,8 @@ class LaunchResource:
         if callback_url:
             callback_key = f"job_callbacks::{target_namespace}::{job_name}"
             callback_info = {"url": callback_url}
+            if env_vars.get("AUTHORIZATION"):
+                callback_info["authorization"] = env_vars["AUTHORIZATION"]
             redis_client.setex(callback_key, 3600, json.dumps(callback_info))
 
         msg = f"Created Job '{job_name}' in '{target_namespace}' from template '{jobtemplate_name}'."

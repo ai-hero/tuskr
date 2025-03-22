@@ -94,6 +94,8 @@ def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> 
                     job_obj["tuskr_failure_reason"] = failure_reason
 
                 headers = {"Content-Type": "application/json"}
+                if callback_info.get("authorization"):
+                    headers["Authorization"] = callback_info["authorization"]
                 full_url = f"{callback_url.rstrip('/')}/jobs/{namespace}/{job_name}"
                 with httpx.Client() as client:
                     response = client.post(full_url, json=job_obj, headers=headers)
