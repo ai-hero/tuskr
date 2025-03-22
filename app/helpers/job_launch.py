@@ -169,6 +169,7 @@ class LaunchResource:
                 "args": [
                     """
                     set -ex
+                    chown -R 1000:1000 /mnt/data
                     apk add --no-cache curl jq
 
                     echo "Fetching context for job $JOB_NAME in ns $NAMESPACE"
@@ -206,7 +207,6 @@ class LaunchResource:
                     {"name": "TUSKR_JOB_TOKEN", "value": token},
                 ],
                 "volumeMounts": [{"name": "inputs-volume", "mountPath": "/mnt/data/inputs"}],
-                "securityContext": {"runAsUser": 1000},  # run as non-root user 'user'
             }
         ]
         pod_spec["initContainers"] = init_containers
@@ -220,6 +220,7 @@ class LaunchResource:
             "args": [
                 """
                 set -ex
+                chown -R 1000:1000 /mnt/data
                 apk add --no-cache curl jq coreutils
 
                 echo "Sidecar waiting for the main container to produce /mnt/data/outputs/done..."
@@ -252,8 +253,8 @@ class LaunchResource:
                 EOF2
 
                 echo "Posting outputs back to context..."
-                curl -v -X POST -H "Content-Type: application/json" \\
-                     -d @/tmp/out.json \\
+                curl -v -X POST -H "Content-Type: application/json" \
+                     -d @/tmp/out.json \
                      "http://tuskr-controller.tuskr.svc.cluster.local:8080/jobs/$NAMESPACE/$JOB_NAME/context?token=$TUSKR_JOB_TOKEN"
 
                 echo "Sidecar post complete. Exiting..."
@@ -265,7 +266,6 @@ class LaunchResource:
                 {"name": "TUSKR_JOB_TOKEN", "value": token},
             ],
             "volumeMounts": [{"name": "outputs-volume", "mountPath": "/mnt/data/outputs"}],
-            "securityContext": {"runAsUser": 1000},  # run as non-root user 'user'
         }
         containers.append(sidecar)
         pod_spec["containers"] = containers
