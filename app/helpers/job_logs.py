@@ -22,6 +22,7 @@
 
 """Module for handling job logs operations with Redis."""
 
+import json
 import logging
 
 import falcon
@@ -49,4 +50,4 @@ class JobLogsResource:
 
         resp.status = falcon.HTTP_200
         # Assume stored_logs is JSON
-        resp.media = {"logs": stored_logs.decode("utf-8")}
+        resp.media = {"logs": json.loads(stored_logs.decode("utf-8"))}
