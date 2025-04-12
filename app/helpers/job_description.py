@@ -25,6 +25,7 @@
 Provides a Falcon resource to describe job details using Redis.
 """
 
+import json
 import logging
 
 import falcon
@@ -53,5 +54,6 @@ class JobDescribeResource:
             resp.media = {"error": msg}
             return
 
+        desc_data = json.loads(raw.decode("utf-8"))
         resp.status = falcon.HTTP_200
-        resp.media = {"describe": raw.decode("utf-8")}
+        resp.media = {"describe": desc_data}

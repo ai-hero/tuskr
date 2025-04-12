@@ -71,9 +71,6 @@ def delete_jobtemplate(body: dict[str, Any], spec: dict[str, Any], **kwargs: Any
     return handle_delete_jobtemplate(body, spec, **kwargs)
 
 
-#
-# Register event-based watcher for Jobs
-#
 @kopf.on.event("batch", "v1", "jobs")  # type: ignore
 def on_job_event(event: dict[str, Any], **kwargs: Any) -> Any:
     """Handle events for Kubernetes Jobs."""
