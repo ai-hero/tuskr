@@ -292,8 +292,9 @@ def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> 
 
     # Check if this is a job created event by inspecting the job object.
     metadata = job_obj.get("metadata", {})
-    labels = metadata.get("labels", {})
-    if labels.get("tuskr.io/launched-by") == "tuskr":
+    # Use annotations instead of labels for the "tuskr.io/launched-by" check
+    annotations = metadata.get("annotations", {})
+    if annotations.get("tuskr.io/launched-by") == "tuskr":
         logger.info(f"Starting job watch for {namespace}/{job_name}")
         t = threading.Thread(target=poll_job, args=(namespace, job_name))
         t.daemon = True
