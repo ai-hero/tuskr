@@ -47,8 +47,14 @@ class JobResource:
 
         job_state = redis_client.get(state_key)
         job_data = redis_client.get(data_key)
+        if not job_state:
+            msg = f"Job {job_name} not found in namespace {namespace} (no state in Redis)."
+            logger.warning(msg)
+            resp.status = falcon.HTTP_404
+            resp.media = {"error": msg}
+            return
 
-        if not job_state and not job_data:
+        if not job_data:
             msg = f"Job {job_name} not found in namespace {namespace} (no data in Redis)."
             logger.warning(msg)
             resp.status = falcon.HTTP_404
