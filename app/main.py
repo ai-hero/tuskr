@@ -72,9 +72,9 @@ def delete_jobtemplate(body: dict[str, Any], spec: dict[str, Any], **kwargs: Any
 
 
 @kopf.on.create("batch", "v1", "jobs")  # type: ignore
-def on_job_event(event: dict[str, Any], **kwargs: Any) -> Any:
+def on_job_create(body: dict[str, Any], **kwargs: Any) -> Any:  # Changed param 'event' to 'body'
     """Handle events for Kubernetes Jobs."""
-    return handle_create_job(event, **kwargs)
+    return handle_create_job(body, **kwargs)  # Pass 'body' instead of 'event'
 
 
 @kopf.on.update("batch", "v1", "jobs")  # type: ignore

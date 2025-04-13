@@ -293,12 +293,8 @@ def send_callback(namespace: str, job_name: str, state: str, job_obj: Any) -> No
                 logger.error(f"Callback failed for {namespace}/{job_name}: {str(e)}")
 
 
-def handle_create_job(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> None:
+def handle_create_job(job_obj: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> None:
     """Start a new thread to poll job state, description, and logs."""
-    job_obj = event.get("object")
-    if not job_obj:
-        return
-
     namespace = job_obj["metadata"]["namespace"]
     job_name = job_obj["metadata"]["name"]
 
@@ -320,12 +316,8 @@ def handle_create_job(event: Dict[str, Any], logger: logging.Logger, **kwargs: A
         logger.info(f"Job {namespace}/{job_name} not launched by tuskr; skipping poll_job")
 
 
-def handle_delete_job(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> None:
+def handle_delete_job(job_obj: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> None:
     """Handle job deletion events."""
-    job_obj = event.get("object")
-    if not job_obj:
-        return
-
     namespace = job_obj["metadata"]["namespace"]
     job_name = job_obj["metadata"]["name"]
 
@@ -350,12 +342,8 @@ def handle_delete_job(event: Dict[str, Any], logger: logging.Logger, **kwargs: A
         logger.info(f"Job {namespace}/{job_name} not launched by tuskr; skipping poll_job")
 
 
-def handle_update_job(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> None:
+def handle_update_job(job_obj: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> None:
     """Handle job update events."""
-    job_obj = event.get("object")
-    if not job_obj:
-        return
-
     namespace = job_obj["metadata"]["namespace"]
     job_name = job_obj["metadata"]["name"]
 
