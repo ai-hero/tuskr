@@ -229,9 +229,13 @@ def poll_job(namespace: str, job_name: str, poll_interval: int = 2) -> None:
 
 def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> None:
     """Start a new thread to poll job state, description, and logs."""
-    namespace = event.get("namespace")
-    job_name = event.get("job_name")
-    poll_interval = event.get("poll_interval", 2)
+    job_obj = event.get("object")
+    if not job_obj:
+        return
+
+    namespace = job_obj["metadata"]["namespace"]
+    job_name = job_obj["metadata"]["name"]
+    poll_interval = 2  # Default poll interval in seconds.
 
     if not namespace or not job_name:
         logger.error("Namespace and job name are required.")
