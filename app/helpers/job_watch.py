@@ -127,7 +127,7 @@ def poll_job_state(namespace: str, job_name: str, poll_interval: int, stop_event
     batch_api = kubernetes.client.BatchV1Api()
 
     while not stop_event.is_set():
-        logger.debug(f"Polling job state for {namespace}/{job_name}")
+        logger.info(f"Polling job state for {namespace}/{job_name}")
         try:
             job_obj = batch_api.read_namespaced_job(job_name, namespace)
             status = job_obj.status
@@ -163,6 +163,7 @@ def poll_job_state(namespace: str, job_name: str, poll_interval: int, stop_event
             # Store the simplified state and the entire job data
             redis_client.setex(state_key, 3600, current_state)
             redis_client.setex(data_key, 3600, json.dumps(job_dict, cls=CustomJsonEncoder))
+            send_callback(namespace, job_name, current_state, job_obj)
             logger.info(f"Updated job state for {namespace}/{job_name}: {current_state}")
 
             # Exit if in terminal state
@@ -186,7 +187,7 @@ def poll_job_description(namespace: str, job_name: str, poll_interval: int, stop
     """
     logger.info(f"Started poll_job_description for {namespace}/{job_name}")
     while not stop_event.is_set():
-        logger.debug(f"Polling job description for {namespace}/{job_name}")
+        logger.info(f"Polling job description for {namespace}/{job_name}")
         try:
             fetch_job_description(namespace, job_name)
         except Exception as e:
@@ -211,7 +212,7 @@ def poll_job_logs(namespace: str, job_name: str, poll_interval: int, stop_event:
     state_key = redis_key_for_job_state(namespace, job_name)
 
     while not stop_event.is_set():
-        logger.debug(f"Polling job logs for {namespace}/{job_name}")
+        logger.info(f"Polling job logs for {namespace}/{job_name}")
         try:
             # Only fetch logs if the Job is at least Running or in a terminal state
             job_state_bytes = redis_client.get(state_key)
@@ -318,7 +319,7 @@ def poll_job(namespace: str, job_name: str, poll_interval: int = 2) -> None:
                 elif current_state in ("Succeeded", "Failed", "NotFound"):
                     # No need to poll logs if never started or already done
                     break
-            logger.debug(f"Waiting for job to enter 'Running' or terminal: {namespace}/{job_name}")
+            logger.info(f"Waiting for job to enter 'Running' or terminal: {namespace}/{job_name}")
         except Exception as e:
             logger.warning(f"Error while waiting for job state: {str(e)}")
         time.sleep(poll_interval)
@@ -410,55 +411,3 @@ def handle_create_job(job_obj: Dict[str, Any], logger: logging.Logger, **kwargs:
         logger.info(f"Job {namespace}/{job_name} not launched by tuskr; skipping.")
 
     return {"message": f"Created JobTemplate {job_name}"}
-
-
-def handle_delete_job(job_obj: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> Any:
-    """Handle job deletion events."""
-    namespace = job_obj["metadata"]["namespace"]
-    job_name = job_obj["metadata"]["name"]
-    if not namespace or not job_name:
-        logger.error("Namespace and job name are required.")
-        return {"message": "Namespace and job name are required."}
-
-    metadata = job_obj.get("metadata", {})
-    annotations = metadata.get("annotations", {})
-
-    if annotations.get("tuskr.io/launched-by") == "tuskr":
-        logger.info(f"Handling delete event for Job {namespace}/{job_name}, launched by tuskr.")
-        # Send callback for the deleted job.
-        state = redis_client.get(redis_key_for_job_state(namespace, job_name))
-        if state:
-            current_state = state.decode("utf-8")
-            send_callback(namespace, job_name, current_state, job_obj)
-        else:
-            logger.info(f"No state found in redis for {namespace}/{job_name} to send callback.")
-    else:
-        logger.info(f"Job {namespace}/{job_name} not launched by tuskr; skipping delete handling.")
-
-    return {"message": f"Deleted Job {namespace}/{job_name}"}
-
-
-def handle_update_job(job_obj: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> Any:
-    """Handle job update events."""
-    namespace = job_obj["metadata"]["namespace"]
-    job_name = job_obj["metadata"]["name"]
-    if not namespace or not job_name:
-        logger.error("Namespace and job name are required.")
-        return {"message": "Namespace and job name are required."}
-
-    metadata = job_obj.get("metadata", {})
-    annotations = metadata.get("annotations", {})
-
-    if annotations.get("tuskr.io/launched-by") == "tuskr":
-        logger.info(f"Handling update event for Job {namespace}/{job_name}, launched by tuskr.")
-        # Possibly send a callback for the updated job
-        state = redis_client.get(redis_key_for_job_state(namespace, job_name))
-        if state:
-            current_state = state.decode("utf-8")
-            send_callback(namespace, job_name, current_state, job_obj)
-        else:
-            logger.info(f"No state found for {namespace}/{job_name} to send callback.")
-    else:
-        logger.info(f"Job {namespace}/{job_name} not launched by tuskr; skipping update handling.")
-
-    return {"message": f"Updated Job {namespace}/{job_name}"}

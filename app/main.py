@@ -27,7 +27,7 @@ from typing import Any
 import kopf
 import kubernetes
 
-from helpers.job_watch import handle_create_job, handle_update_job
+from helpers.job_watch import handle_create_job
 from helpers.jobtemplate_watch import handle_create_jobtemplate, handle_delete_jobtemplate, handle_update_jobtemplate
 from helpers.server import start_http_server
 
@@ -75,10 +75,3 @@ def delete_jobtemplate(body: dict[str, Any], spec: dict[str, Any], **kwargs: Any
 def on_job_create(body: dict[str, Any], **kwargs: Any) -> Any:  # Changed param 'event' to 'body'
     """Handle events for Kubernetes Jobs."""
     return handle_create_job(body, **kwargs)  # Pass 'body' instead of 'event'
-
-
-@kopf.on.update("batch", "v1", "jobs")  # type: ignore
-def on_job_update(body: dict[str, Any], **kwargs: Any) -> Any:
-    """Handle update of a Kubernetes Job."""
-    print("Job update event received.")
-    return handle_update_job(body, **kwargs)
