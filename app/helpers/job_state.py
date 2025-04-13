@@ -21,6 +21,7 @@
 # SOFTWARE.
 """Module for job state management."""
 
+import json
 import logging
 
 import falcon
@@ -64,7 +65,7 @@ class JobResource:
         # job_state is just a short string ("Pending", "Running", "Succeeded", etc.)
         # job_data is the JSON representation of the job object we stored
         resp.status = falcon.HTTP_200
-        resp.media = job_data
+        resp.media = json.loads(job_data.decode("utf-8"))
 
     def on_delete(self, req: Request, resp: Response, namespace: str, job_name: str) -> None:
         """Delete the Job from Kubernetes (foreground propagation). Leaves Redis data as-is."""
