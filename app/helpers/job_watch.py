@@ -293,7 +293,7 @@ def send_callback(namespace: str, job_name: str, state: str, job_obj: Any) -> No
                 logger.error(f"Callback failed for {namespace}/{job_name}: {str(e)}")
 
 
-def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> None:
+def handle_create_job(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> None:
     """Start a new thread to poll job state, description, and logs."""
     job_obj = event.get("object")
     if not job_obj:
@@ -308,22 +308,73 @@ def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> 
 
     metadata = job_obj.get("metadata", {})
     annotations = metadata.get("annotations", {})
-    event_type = event.get("type", "created").lower()  # default to created if not provided
 
     if annotations.get("tuskr.io/launched-by") == "tuskr":
-        print(f"Job {namespace}/{job_name} launched by tuskr; event type: {event_type}")
-        if event_type in ("created", "added"):
-            logger.info(f"Starting job watch for {namespace}/{job_name}")
-            t = threading.Thread(target=poll_job, args=(namespace, job_name))
-            t.daemon = True
-            t.start()
-            logger.info(f"Started asynchronous poll_job for {namespace}/{job_name}")
+        print(f"Job {namespace}/{job_name} launched by tuskr; event type:", job_obj)
+        logger.info(f"Starting job watch for {namespace}/{job_name}")
+        t = threading.Thread(target=poll_job, args=(namespace, job_name))
+        t.daemon = True
+        t.start()
+        logger.info(f"Started asynchronous poll_job for {namespace}/{job_name}")
+    else:
+        logger.info(f"Job {namespace}/{job_name} not launched by tuskr; skipping poll_job")
+
+
+def handle_delete_job(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> None:
+    """Handle job deletion events."""
+    job_obj = event.get("object")
+    if not job_obj:
+        return
+
+    namespace = job_obj["metadata"]["namespace"]
+    job_name = job_obj["metadata"]["name"]
+
+    if not namespace or not job_name:
+        logger.error("Namespace and job name are required.")
+        return
+
+    metadata = job_obj.get("metadata", {})
+    annotations = metadata.get("annotations", {})
+
+    if annotations.get("tuskr.io/launched-by") == "tuskr":
+        print(f"Job {namespace}/{job_name} launched by tuskr; event type:", job_obj)
+        logger.info(f"Handling delete event for {namespace}/{job_name}")
+        # Send callback for the deleted job.
+        state = redis_client.get(redis_key_for_job_state(namespace, job_name))
+        if state:
+            current_state = state.decode("utf-8")
+            send_callback(namespace, job_name, current_state, job_obj)
         else:
-            state = redis_client.get(redis_key_for_job_state(namespace, job_name))
-            if state:
-                current_state = state.decode("utf-8")
-                send_callback(namespace, job_name, current_state, job_obj)
-            else:
-                logger.info(f"No state found in redis for {namespace}/{job_name} to send callback")
+            logger.info(f"No state found in redis for {namespace}/{job_name} to send callback")
+    else:
+        logger.info(f"Job {namespace}/{job_name} not launched by tuskr; skipping poll_job")
+
+
+def handle_update_job(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> None:
+    """Handle job update events."""
+    job_obj = event.get("object")
+    if not job_obj:
+        return
+
+    namespace = job_obj["metadata"]["namespace"]
+    job_name = job_obj["metadata"]["name"]
+
+    if not namespace or not job_name:
+        logger.error("Namespace and job name are required.")
+        return
+
+    metadata = job_obj.get("metadata", {})
+    annotations = metadata.get("annotations", {})
+
+    if annotations.get("tuskr.io/launched-by") == "tuskr":
+        print(f"Job {namespace}/{job_name} launched by tuskr; event type:", job_obj)
+        logger.info(f"Handling update event for {namespace}/{job_name}")
+        # Send callback for the updated job.
+        state = redis_client.get(redis_key_for_job_state(namespace, job_name))
+        if state:
+            current_state = state.decode("utf-8")
+            send_callback(namespace, job_name, current_state, job_obj)
+        else:
+            logger.info(f"No state found in redis for {namespace}/{job_name} to send callback")
     else:
         logger.info(f"Job {namespace}/{job_name} not launched by tuskr; skipping poll_job")

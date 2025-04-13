@@ -27,7 +27,7 @@ from typing import Any
 import kopf
 import kubernetes
 
-from helpers.job_watch import watch_jobs
+from helpers.job_watch import handle_create_job, handle_delete_job, handle_update_job
 from helpers.jobtemplate_watch import handle_create_jobtemplate, handle_delete_jobtemplate, handle_update_jobtemplate
 from helpers.server import start_http_server
 
@@ -71,7 +71,19 @@ def delete_jobtemplate(body: dict[str, Any], spec: dict[str, Any], **kwargs: Any
     return handle_delete_jobtemplate(body, spec, **kwargs)
 
 
-@kopf.on.event("batch", "v1", "jobs")  # type: ignore
+@kopf.on.create("batch", "v1", "jobs")  # type: ignore
 def on_job_event(event: dict[str, Any], **kwargs: Any) -> Any:
     """Handle events for Kubernetes Jobs."""
-    return watch_jobs(event, **kwargs)
+    return handle_create_job(event, **kwargs)
+
+
+@kopf.on.update("batch", "v1", "jobs")  # type: ignore
+def on_job_update(event: dict[str, Any], **kwargs: Any) -> Any:
+    """Handle update of a Kubernetes Job."""
+    return handle_update_job(event, **kwargs)
+
+
+@kopf.on.delete("batch", "v1", "jobs")  # type: ignore
+def on_job_delete(event: dict[str, Any], **kwargs: Any) -> Any:
+    """Handle deletion of a Kubernetes Job."""
+    return handle_delete_job(event, **kwargs)
