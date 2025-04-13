@@ -351,17 +351,26 @@ def send_callback(namespace: str, job_name: str, state: str, job_obj: Any) -> No
     if isinstance(final_state, bytes):
         final_state = final_state.decode("utf-8")
 
-    job_dict = job_obj.to_dict()
+    # If job_obj is from kubernetes.client, we can call .to_dict(), but if
+    # it's the body from Kopf, it's already a dict and does not have to_dict().
+    if hasattr(job_obj, "to_dict"):
+        job_dict = job_obj.to_dict()
+    else:
+        job_dict = job_obj  # It's already a dict
+
+    # Attach the stored/redis-based final_state
     job_dict["tuskr_state"] = final_state
 
     if final_state == "Failed":
+        # If this is a Kubernetes API object, we can still parse 'conditions'.
+        # If it’s a dict from Kopf, the shape is similar:
         conditions = job_dict.get("status", {}).get("conditions", [])
         for condition in conditions:
             if condition.get("type") == "Failed" and condition.get("status") == "True":
                 job_dict["tuskr_failure_reason"] = condition.get("message")
                 break
 
-    # Check if a callback is registered.
+    # Check if a callback is registered in Redis
     callback_key = f"job_callbacks::{namespace}::{job_name}"
     callback_info = redis_client.get(callback_key)
     if callback_info:
@@ -374,10 +383,11 @@ def send_callback(namespace: str, job_name: str, state: str, job_obj: Any) -> No
                     headers["Authorization"] = callback_info["authorization"]
                 full_url = f"{callback_url.rstrip('/')}/jobs/{namespace}/{job_name}"
                 with httpx.Client() as client:
+                    # JSON-serialize with a safe custom encoder if needed
                     job_json = json.loads(json.dumps(job_dict, cls=CustomJsonEncoder))
                     response = client.post(full_url, json=job_json, headers=headers)
                     response.raise_for_status()
-                # Remove the callback registration for terminal jobs
+                # Remove callback if job is terminal
                 if final_state in ("Succeeded", "Failed"):
                     redis_client.delete(callback_key)
                 log_msg = f"Callback for {namespace}/{job_name} => {final_state}"
