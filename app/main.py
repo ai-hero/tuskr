@@ -80,4 +80,5 @@ def on_job_create(body: dict[str, Any], **kwargs: Any) -> Any:  # Changed param 
 @kopf.on.update("batch", "v1", "jobs")  # type: ignore
 def on_job_update(body: dict[str, Any], **kwargs: Any) -> Any:
     """Handle update of a Kubernetes Job."""
+    print("Job update event received.")
     return handle_update_job(body, **kwargs)
