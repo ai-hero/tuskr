@@ -114,6 +114,38 @@ def fetch_job_description(namespace: str, job_name: str) -> None:
         logger.warning(f"Failed to gather description data for {namespace}/{job_name}: {str(e)}")
 
 
+def fetch_job_state(namespace: str, job_name: str) -> tuple[Any, dict[str, Any]]:
+    """Fetch job state and return the job object and its modified dictionary."""
+    batch_api = kubernetes.client.BatchV1Api()
+    job_obj = batch_api.read_namespaced_job(job_name, namespace)
+    status = job_obj.status
+    conditions = status.conditions if status and status.conditions else []
+
+    current_state = "Unknown"
+    failure_reason = None
+    for condition in conditions:
+        if condition.type == "Complete" and condition.status == "True":
+            current_state = "Succeeded"
+            break
+        elif condition.type == "Failed" and condition.status == "True":
+            current_state = "Failed"
+            failure_reason = condition.message
+            break
+
+    if current_state == "Unknown":
+        if status.active and status.active > 0:
+            current_state = "Running"
+        elif not conditions and not status.active:
+            current_state = "Pending"
+
+    job_dict = job_obj.to_dict()
+    job_dict["tuskr_state"] = current_state
+    if failure_reason:
+        job_dict["tuskr_failure_reason"] = failure_reason
+
+    return job_obj, job_dict
+
+
 def poll_job_state(namespace: str, job_name: str, poll_interval: int, stop_event: threading.Event) -> None:
     """Continuously poll the job state and store state information in Redis.
 
@@ -124,45 +156,16 @@ def poll_job_state(namespace: str, job_name: str, poll_interval: int, stop_event
     logger.info(f"Started poll_job_state for {namespace}/{job_name}")
     state_key = redis_key_for_job_state(namespace, job_name)
     data_key = redis_key_for_job_data(namespace, job_name)
-    batch_api = kubernetes.client.BatchV1Api()
 
     while not stop_event.is_set():
         logger.info(f"Polling job state for {namespace}/{job_name}")
         try:
-            job_obj = batch_api.read_namespaced_job(job_name, namespace)
-            status = job_obj.status
-            conditions = status.conditions if status and status.conditions else []
+            job_obj, job_dict = fetch_job_state(namespace, job_name)
+            current_state = job_dict["tuskr_state"]
 
-            # Default to "Unknown"
-            current_state = "Unknown"
-            failure_reason = None
-
-            # Look for terminal conditions
-            for condition in conditions:
-                if condition.type == "Complete" and condition.status == "True":
-                    current_state = "Succeeded"
-                    break
-                elif condition.type == "Failed" and condition.status == "True":
-                    current_state = "Failed"
-                    failure_reason = condition.message
-                    break
-
-            # If not terminal, check if it's Running or Pending
-            if current_state == "Unknown":
-                if status.active and status.active > 0:
-                    current_state = "Running"
-                elif not conditions and not status.active:
-                    current_state = "Pending"
-
-            # Attach tuskr_state to the job object
-            job_dict = job_obj.to_dict()
-            job_dict["tuskr_state"] = current_state
-            if failure_reason:
-                job_dict["tuskr_failure_reason"] = failure_reason
-
-            # Store the simplified state and the entire job data
             redis_client.setex(state_key, 3600, current_state)
             redis_client.setex(data_key, 3600, json.dumps(job_dict, cls=CustomJsonEncoder))
+
             send_callback(namespace, job_name, current_state, job_obj)
             logger.info(f"Updated job state for {namespace}/{job_name}: {current_state}")
 
