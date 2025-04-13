@@ -70,11 +70,6 @@ def main() -> None:
             line = f'export {varname}="{value}"\n'
             env_file.write(line)
 
-    # Optional: set permissions
-    input_dir.chmod(0o755)
-    for f in input_dir.iterdir():
-        f.chmod(0o644)
-
     print("[init_fetch] Successfully fetched and wrote context data.")
     sys.exit(0)
 
