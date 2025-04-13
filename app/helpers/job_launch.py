@@ -88,7 +88,7 @@ class LaunchResource:
             )
         except kubernetes.client.exceptions.ApiException as e:
             if e.status == 404:
-                msg = f"JobTemplate '{jobtemplate_name}' not found " f"in namespace '{jobtemplate_namespace}'."
+                msg = f"JobTemplate '{jobtemplate_name}' not found in namespace '{jobtemplate_namespace}'."
                 logger.error(msg)
                 resp.status = falcon.HTTP_404
                 resp.media = {"error": msg}
@@ -169,30 +169,28 @@ class LaunchResource:
                 "command": ["sh", "-c"],
                 "args": [
                     """
-                    set -ex
+                    set -e
                     chown -R 1000:1000 /mnt/data
                     apk add --no-cache curl jq
 
-                    echo "Fetching context for job $JOB_NAME in ns $NAMESPACE"
-                    HTTP_CODE=$(curl -s -o /tmp/context.json -w '%{http_code}' \
-                        "http://tuskr-controller.tuskr.svc.cluster.local:8080/jobs/$NAMESPACE/$JOB_NAME/context?token=$TUSKR_JOB_TOKEN")
+                    echo "Fetching context..."
+                    HTTP_CODE=$(curl -s -o /tmp/context.json -w '%{http_code}' \\
+                        "http://tuskr-controller.tuskr.svc.cluster.local:8080/jobs/$NAMESPACE/" \\
+                        "$JOB_NAME/context?token=$TUSKR_JOB_TOKEN")
 
                     if [ "$HTTP_CODE" -ne 200 ]; then
-                      echo "Failed to fetch context. HTTP code: $HTTP_CODE" >&2
-                      cat /tmp/context.json >&2
+                      echo "Error: Failed to fetch context. HTTP code: $HTTP_CODE" >&2
                       exit 1
                     fi
 
                     mkdir -p /mnt/data/inputs
 
-                    # Save inputs to /mnt/data/inputs
                     for filename in $(jq -r '.inputs | keys[]' /tmp/context.json); do
                       content=$(jq -r ".inputs[\\"$filename\\"]" /tmp/context.json)
                       echo "$content" > "/mnt/data/inputs/$filename"
-                      echo "Wrote input file: $filename"
+                      echo "Input saved: $filename"
                     done
 
-                    # Write out a .env file with environment variables
                     touch /mnt/data/inputs/.env
                     for varname in $(jq -r '.env_vars | keys[]' /tmp/context.json); do
                       value=$(jq -r ".env_vars[\\"$varname\\"]" /tmp/context.json)
@@ -220,13 +218,12 @@ class LaunchResource:
             "command": ["sh", "-c"],
             "args": [
                 """
-                set -ex
+                set -e
                 chown -R 1000:1000 /mnt/data
                 apk add --no-cache curl jq coreutils
 
-                echo "Sidecar checking if all non-'playout-' containers are done..."
+                echo "Checking container statuses..."
                 while true; do
-                  # Fetch pod details from K8s API
                   curl -s \
                     -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
                     --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
@@ -234,8 +231,6 @@ class LaunchResource:
                     "pods/${POD_NAME}" \
                     > /tmp/pod.json
 
-                  # Count how many containers are *not* terminated, ignoring those whose
-                  # name starts with 'playout-'.
                   NOT_TERMINATED_COUNT=$(jq -r '
                     [
                       .status.containerStatuses[]
@@ -247,15 +242,14 @@ class LaunchResource:
                   ' /tmp/pod.json)
 
                   if [ "$NOT_TERMINATED_COUNT" -eq 0 ]; then
-                    echo "All non-playout containers have terminated."
+                    echo "All main containers terminated."
                     break
                   fi
 
                   sleep 2
                 done
 
-                echo "Main/user containers terminated. Gathering output files..."
-
+                echo "Gathering outputs..."
                 if [ -d /mnt/data/outputs ] && [ "$(ls -A /mnt/data/outputs | grep -v '^done$')" ]; then
                   cat <<EOF > /tmp/out.json
                   {
@@ -281,18 +275,17 @@ EOF2
                   echo '{"outputs": {}}' > /tmp/out.json
                 fi
 
-                echo "Posting outputs back to context..."
+                echo "Posting outputs..."
                 HTTP_CODE_POST=$(curl -s -o /tmp/post_response.json -w '%{http_code}' \
                     -X POST -H "Content-Type: application/json" \
-                    -d @/tmp.out.json \
+                    -d @/tmp/out.json \
                     "http://tuskr-controller.tuskr.svc.cluster.local:8080/jobs/${NAMESPACE}/${JOB_NAME}/context?token=${TUSKR_JOB_TOKEN}")
                 if [ "$HTTP_CODE_POST" -ne 200 ]; then
-                    echo "Failed to post outputs. HTTP code: $HTTP_CODE_POST" >&2
-                    cat /tmp/post_response.json >&2
+                    echo "Error: Failed to post outputs. HTTP code: $HTTP_CODE_POST" >&2
                     exit 1
                 fi
 
-                echo "Sidecar post complete. Exiting..."
+                echo "Outputs successfully posted."
                 """
             ],
             "env": [
