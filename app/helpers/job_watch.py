@@ -32,6 +32,7 @@ from typing import Any, Dict
 import httpx
 import kubernetes
 
+from helpers.encoder import CustomJsonEncoder
 from helpers.redis_client import redis_client
 from helpers.utils import (
     redis_key_for_job_data,
@@ -50,7 +51,8 @@ def fetch_job_description(namespace: str, job_name: str) -> None:
         batch_api = kubernetes.client.BatchV1Api()
         job_description_obj = batch_api.read_namespaced_job(job_name, namespace)
         describe_key = redis_key_for_job_describe(namespace, job_name)
-        redis_client.setex(describe_key, 3600, json.dumps(job_description_obj.to_dict()))
+        # Use CustomJsonEncoder to serialize the dict
+        redis_client.setex(describe_key, 3600, json.dumps(job_description_obj.to_dict(), cls=CustomJsonEncoder))
         logger.info(f"Job description stored for {namespace}/{job_name}")
     except Exception as e:
         logger.warning(f"Failed to gather describe data for {namespace}/{job_name}: {str(e)}")
@@ -79,7 +81,7 @@ def fetch_all_job_pod_logs(namespace: str, job_name: str) -> None:
             """Update the aggregated logs in Redis."""
             with logs_lock:
                 aggregated = list(logs_dict.values())
-            redis_client.setex(logs_key, 3600, json.dumps(aggregated))
+            redis_client.setex(logs_key, 3600, json.dumps(aggregated, cls=CustomJsonEncoder))
 
         def update_description_periodically() -> None:
             """Periodically update the job description in Redis."""
@@ -105,18 +107,19 @@ def fetch_all_job_pod_logs(namespace: str, job_name: str) -> None:
                         _preload_content=False,
                         tail_lines=10,
                     )
-                    # Continuously stream logs.
-                    while log_stream.is_open():
+                    # Replace loop checking is_open() with a loop that reads until no chunk is read
+                    while True:
                         log_stream.update(timeout=1)
-                        chunk = ""
-                        if log_stream.peek_stdout():
+                        chunk = b""
+                        if hasattr(log_stream, "peek_stdout") and log_stream.peek_stdout():
                             chunk = log_stream.read_stdout()
-                        elif log_stream.peek_stderr():
+                        elif hasattr(log_stream, "peek_stderr") and log_stream.peek_stderr():
                             chunk = log_stream.read_stderr()
-                        if chunk:
-                            with logs_lock:
-                                logs_dict[container_key] += chunk
-                            update_aggregated_logs()
+                        if not chunk:
+                            break
+                        with logs_lock:
+                            logs_dict[container_key] += chunk.decode("utf-8")
+                        update_aggregated_logs()
                     logger.info(f"Live logs streamed for {pod_name}/{container.name}")
                 except Exception as inner_e:
                     error_msg = str(inner_e)
@@ -190,7 +193,7 @@ def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> 
     # Store job data and current state in Redis.
     data_key = redis_key_for_job_data(namespace, job_name)
     state_key = redis_key_for_job_state(namespace, job_name)
-    redis_client.setex(data_key, 3600, json.dumps(job_obj))
+    redis_client.setex(data_key, 3600, json.dumps(job_obj, cls=CustomJsonEncoder))
     redis_client.setex(state_key, 3600, current_state)
 
     # For terminal jobs, gather additional details concurrently.

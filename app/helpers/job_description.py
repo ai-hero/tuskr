@@ -31,6 +31,7 @@ import logging
 import falcon
 from falcon import Request, Response
 
+from helpers.custom_json_decoder import CustomJsonDecoder
 from helpers.redis_client import redis_client
 from helpers.utils import redis_key_for_job_describe
 
@@ -54,6 +55,7 @@ class JobDescribeResource:
             resp.media = {"error": msg}
             return
 
-        desc_data = json.loads(raw.decode("utf-8"))
+        # Decode using CustomJsonDecoder
+        desc_data = json.loads(raw.decode("utf-8"), cls=CustomJsonDecoder)
         resp.status = falcon.HTTP_200
         resp.media = {"describe": desc_data}
