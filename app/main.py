@@ -78,12 +78,12 @@ def on_job_create(body: dict[str, Any], **kwargs: Any) -> Any:  # Changed param 
 
 
 @kopf.on.update("batch", "v1", "jobs")  # type: ignore
-def on_job_update(event: dict[str, Any], **kwargs: Any) -> Any:
+def on_job_update(body: dict[str, Any], **kwargs: Any) -> Any:
     """Handle update of a Kubernetes Job."""
-    return handle_update_job(event, **kwargs)
+    return handle_update_job(body, **kwargs)
 
 
 @kopf.on.delete("batch", "v1", "jobs")  # type: ignore
-def on_job_delete(event: dict[str, Any], **kwargs: Any) -> Any:
+def on_job_delete(body: dict[str, Any], **kwargs: Any) -> Any:
     """Handle deletion of a Kubernetes Job."""
-    return handle_delete_job(event, **kwargs)
+    return handle_delete_job(body, **kwargs)
