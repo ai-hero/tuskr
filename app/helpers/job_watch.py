@@ -25,6 +25,7 @@
 import json
 import logging
 import threading
+import time
 import traceback
 from typing import Any, Dict
 
@@ -64,40 +65,69 @@ def fetch_all_job_pod_logs(namespace: str, job_name: str) -> None:
         core_api = kubernetes.client.CoreV1Api()
         pods = core_api.list_namespaced_pod(namespace, label_selector=f"job-name={job_name}").items
 
-        logs_accumulator = []
+        logs_key = redis_key_for_job_logs(namespace, job_name)
+        state_key = redis_key_for_job_state(namespace, job_name)
+        # Set initial job state to indicate logs are processing.
+        redis_client.setex(state_key, 3600, "Running logs")
+
+        # Shared dictionary & lock for progressive logs.
+        logs_dict: Dict[str, Any] = {}
+        logs_lock = threading.Lock()
+        stop_event = threading.Event()
+
+        def update_aggregated_logs() -> None:
+            """Update the aggregated logs in Redis."""
+            with logs_lock:
+                aggregated = list(logs_dict.values())
+            redis_client.setex(logs_key, 3600, json.dumps(aggregated))
+
+        def update_description_periodically() -> None:
+            """Periodically update the job description in Redis."""
+            while not stop_event.is_set():
+                fetch_job_description(namespace, job_name)
+                time.sleep(2)
 
         def stream_pod_logs(pod: Any) -> None:
-            """Stream logs for each container in a specific pod."""
+            """Stream logs for each container in the pod."""
             pod_name = pod.metadata.name
-            pod_log_entries = []
             for container in pod.spec.containers:
-                container_logs = []
+                # Skip specific containers.
                 if container.name in ("playout-init", "playout-sidecar"):
                     continue
+                container_key = f"{pod_name}/{container.name}"
+                logs_dict[container_key] = ""
                 try:
-                    # Start a live log stream for the container.
                     log_stream = core_api.read_namespaced_pod_log(
                         name=pod_name,
                         namespace=namespace,
                         container=container.name,
                         follow=True,
                         _preload_content=False,
-                        tail_lines=10,  # Fetch the last few lines before live streaming begins.
+                        tail_lines=10,
                     )
-                    # Continuously update the stream until it's closed.
+                    # Continuously stream logs.
                     while log_stream.is_open():
                         log_stream.update(timeout=1)
+                        chunk = ""
                         if log_stream.peek_stdout():
-                            container_logs.append(log_stream.read_stdout())
+                            chunk = log_stream.read_stdout()
                         elif log_stream.peek_stderr():
-                            container_logs.append(log_stream.read_stderr())
-                    pod_log_entries.append(f"{pod_name}/{container.name}:\n{''.join(container_logs)}")
+                            chunk = log_stream.read_stderr()
+                        if chunk:
+                            with logs_lock:
+                                logs_dict[container_key] += chunk
+                            update_aggregated_logs()
                     logger.info(f"Live logs streamed for {pod_name}/{container.name}")
                 except Exception as inner_e:
-                    logger.warning(f"Could not stream logs for {pod_name}/{container.name}: {str(inner_e)}")
-            # Combine logs from all containers of this pod.
-            combined_pod_logs = "\n".join(pod_log_entries)
-            logs_accumulator.append(combined_pod_logs)
+                    error_msg = str(inner_e)
+                    logger.warning(f"Could not stream logs for {pod_name}/{container.name}: {error_msg}")
+                    with logs_lock:
+                        logs_dict[container_key] += f"\nError: {error_msg}"
+                    update_aggregated_logs()
+
+        # Start the description updater thread.
+        desc_thread = threading.Thread(target=update_description_periodically)
+        desc_thread.start()
 
         # Launch a thread for each pod to stream its logs.
         threads = []
@@ -108,8 +138,13 @@ def fetch_all_job_pod_logs(namespace: str, job_name: str) -> None:
         for t in threads:
             t.join()
 
-        logs_key = redis_key_for_job_logs(namespace, job_name)
-        redis_client.setex(logs_key, 3600, json.dumps(logs_accumulator))
+        # Signal the periodic updater to stop and wait.
+        stop_event.set()
+        desc_thread.join()
+
+        # Final aggregated logs update.
+        update_aggregated_logs()
+        redis_client.setex(state_key, 3600, "Completed logs")
         logger.info(f"Combined pod logs stored for {namespace}/{job_name}")
     except Exception as e:
         logger.warning(f"Failed to gather logs for {namespace}/{job_name}: {str(e)}")

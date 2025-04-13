@@ -49,5 +49,5 @@ class JobLogsResource:
             return
 
         resp.status = falcon.HTTP_200
-        # Assume stored_logs is JSON
-        resp.media = {"logs": json.loads(stored_logs.decode("utf-8"))}
+        # Return the logs directly as a list of objects with the specified structure.
+        resp.media = json.loads(stored_logs.decode("utf-8"))
