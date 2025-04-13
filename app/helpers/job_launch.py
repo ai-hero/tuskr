@@ -205,7 +205,6 @@ __PY__
                 ],
                 "volumeMounts": [
                     {"name": "inputs-volume", "mountPath": "/mnt/data/inputs"},
-                    {"name": "outputs-volume", "mountPath": "/mnt/data/outputs"},
                 ],
             }
         ]
