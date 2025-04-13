@@ -27,7 +27,7 @@ import logging
 import threading
 import time
 import traceback
-from typing import Dict
+from typing import Any, Dict
 
 import httpx
 import kubernetes
@@ -145,7 +145,7 @@ def poll_job_logs(namespace: str, job_name: str, poll_interval: int, stop_event:
     redis_client.setex(state_key, 3600, "Completed logs")
 
 
-def watch_jobs(namespace: str, job_name: str, poll_interval: int = 2) -> None:
+def poll_job(namespace: str, job_name: str, poll_interval: int = 2) -> None:
     """Poll job description, state, and logs concurrently until a terminal state is reached.
 
     This function starts three threads that update the Redis keys for description, state, and logs.
@@ -225,3 +225,32 @@ def watch_jobs(namespace: str, job_name: str, poll_interval: int = 2) -> None:
             except Exception as e:
                 traceback.print_exc()
                 logger.error(f"Callback failed for {namespace}/{job_name}: {str(e)}")
+
+
+def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> None:
+    """Start a new thread to poll job state, description, and logs."""
+    namespace = event.get("namespace")
+    job_name = event.get("job_name")
+    poll_interval = event.get("poll_interval", 2)
+
+    if not namespace or not job_name:
+        logger.error("Namespace and job name are required.")
+        return
+
+    # Check if this is a job created event by inspecting the job object.
+    job_obj = event.get("object")
+    if job_obj:
+        metadata = job_obj.get("metadata", {})
+        labels = metadata.get("labels", {})
+        if labels.get("tuskr.io/launched-by") == "tuskr":
+            logger.info(f"Starting job watch for {namespace}/{job_name}")
+            import threading  # Ensure threading is imported.
+
+            t = threading.Thread(target=poll_job, args=(namespace, job_name, poll_interval))
+            t.daemon = True
+            t.start()
+            logger.info(f"Started asynchronous poll_job for {namespace}/{job_name}")
+            return
+        else:
+            logger.info(f"Job {namespace}/{job_name} not launched by tuskr; skipping poll_job")
+            return

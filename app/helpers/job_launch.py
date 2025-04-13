@@ -262,7 +262,9 @@ __SIDE__
             "metadata": {
                 "name": job_name,
                 "labels": {"jobtemplate": jobtemplate_name},
-                "annotations": {"tuskr.io/ttl-seconds-after-finished": "900"},
+                "annotations": {
+                    "tuskr.io/launched-by": "tuskr",
+                },
             },
             "spec": {
                 "template": job_spec_from_template,
