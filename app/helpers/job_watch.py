@@ -208,24 +208,22 @@ def poll_job(namespace: str, job_name: str, poll_interval: int = 2) -> None:
     logs_thread = None
     # Wait until the job state indicates it is running (or terminal) before starting log polling.
     while True:
-        logger.info(f"Waiting for job state update for {namespace}/{job_name}")  # Added debug log in loop
         try:
             job_state_bytes = redis_client.get(redis_key_for_job_state(namespace, job_name))
             if job_state_bytes:
                 current_state = job_state_bytes.decode("utf-8")
                 if current_state == "Running":
-                    # Start logs polling as soon as the job is running.
                     logs_thread = threading.Thread(
                         target=poll_job_logs, args=(namespace, job_name, poll_interval, stop_event)
                     )
                     logs_thread.start()
                     break
-                elif current_state in ("Succeeded", "Failed"):
+                elif current_state in ("Succeeded", "Failed", "NotFound"):
                     break
-            time.sleep(poll_interval)
+            logger.info(f"Waiting for job state update for {namespace}/{job_name}")  # Moved log after state check.
         except Exception as e:
             logger.warning(f"Error while waiting for job state to update: {str(e)}")
-            time.sleep(poll_interval)
+        time.sleep(poll_interval)
 
     # Wait for the state polling thread to detect a terminal state.
     state_thread.join()
