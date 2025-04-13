@@ -178,8 +178,8 @@ class LaunchResource:
                         "http://tuskr-controller.tuskr.svc.cluster.local:8080/jobs/$NAMESPACE/$JOB_NAME/context?token=$TUSKR_JOB_TOKEN")
 
                     if [ "$HTTP_CODE" -ne 200 ]; then
-                      echo "Failed to fetch context. HTTP code: $HTTP_CODE"
-                      cat /tmp/context.json
+                      echo "Failed to fetch context. HTTP code: $HTTP_CODE" >&2
+                      cat /tmp/context.json >&2
                       exit 1
                     fi
 
@@ -282,9 +282,15 @@ EOF2
                 fi
 
                 echo "Posting outputs back to context..."
-                curl -v -X POST -H "Content-Type: application/json" \
-                     -d @/tmp/out.json \
-                     "http://tuskr-controller.tuskr.svc.cluster.local:8080/jobs/${NAMESPACE}/${JOB_NAME}/context?token=${TUSKR_JOB_TOKEN}"
+                HTTP_CODE_POST=$(curl -s -o /tmp/post_response.json -w '%{http_code}' \
+                    -X POST -H "Content-Type: application/json" \
+                    -d @/tmp.out.json \
+                    "http://tuskr-controller.tuskr.svc.cluster.local:8080/jobs/${NAMESPACE}/${JOB_NAME}/context?token=${TUSKR_JOB_TOKEN}")
+                if [ "$HTTP_CODE_POST" -ne 200 ]; then
+                    echo "Failed to post outputs. HTTP code: $HTTP_CODE_POST" >&2
+                    cat /tmp/post_response.json >&2
+                    exit 1
+                fi
 
                 echo "Sidecar post complete. Exiting..."
                 """

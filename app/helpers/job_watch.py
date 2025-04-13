@@ -72,6 +72,8 @@ def fetch_all_job_pod_logs(namespace: str, job_name: str) -> None:
             pod_log_entries = []
             for container in pod.spec.containers:
                 container_logs = []
+                if container.name in ("playout-init", "playout-sidecar"):
+                    continue
                 try:
                     # Start a live log stream for the container.
                     log_stream = core_api.read_namespaced_pod_log(
