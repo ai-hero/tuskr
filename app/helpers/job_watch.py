@@ -229,9 +229,8 @@ def poll_job_logs(namespace: str, job_name: str, poll_interval: int, stop_event:
                 pod_name = pod.metadata.name
                 # A pod can have multiple containers
                 for container in pod.spec.containers:
-                    # Example: skip sidecar or init containers if you do not want them
-                    # if container.name in ("playout-init", "playout-sidecar"):
-                    #     continue
+                    if container.name in ("playout-init", "playout-sidecar"):
+                        continue
 
                     try:
                         logs = core_api.read_namespaced_pod_log(
@@ -374,6 +373,7 @@ def send_callback(namespace: str, job_name: str, state: str, job_obj: Any) -> No
                 if callback_info.get("authorization"):
                     headers["Authorization"] = callback_info["authorization"]
                 full_url = f"{callback_url.rstrip('/')}/jobs/{namespace}/{job_name}"
+                print(json.dumps(job_dict, cls=CustomJsonEncoder, indent=2))
                 with httpx.Client() as client:
                     job_json = json.loads(json.dumps(job_dict, cls=CustomJsonEncoder))
                     response = client.post(full_url, json=job_json, headers=headers)
