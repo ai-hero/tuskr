@@ -138,6 +138,7 @@ class LaunchResource:
         # 5) Modify the Pod spec
         # --------------------------------------
         pod_spec = job_spec_from_template.get("spec", {})
+        pod_spec["shareProcessNamespace"] = True
         containers = pod_spec.get("containers", [])
 
         # 5a) Add volumes for inputs/outputs
@@ -190,6 +191,9 @@ __PY__
 
                     # Install dependencies needed by init_fetch.py
                     pip install --no-cache-dir httpx
+
+                    chmod -R 755 /mnt/data/inputs
+                    chmod -R 755 /mnt/data/outputs
 
                     # Run the script
                     python /init_fetch.py

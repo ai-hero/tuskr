@@ -20,7 +20,12 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-"""Sidecar for playout jobs."""
+
+# MIT License
+#
+# (Copyright notice...)
+
+"""Sidecar for playout jobs using shareProcessNamespace=true."""
 
 import base64
 import os
@@ -30,21 +35,41 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from kubernetes import client, config
-from kubernetes.client import V1PodStatus  # new import for type annotation
-from kubernetes.client.rest import ApiException
+import psutil
 
 
-def all_user_containers_terminated(pod_status: V1PodStatus) -> bool:
-    """Return True if all containers that do NOT start with 'playout-' have a 'terminated' state."""
-    cstatuses = pod_status.container_statuses
-    if not cstatuses:
-        return False
+def get_container_cgroup_path(pid: int) -> str:
+    """Get the cgroup path for a given PID."""
+    cgroup_path = ""
+    cgroup_file = f"/proc/{pid}/cgroup"
+    try:
+        with open(cgroup_file, encoding="utf-8") as f:
+            for line in f:
+                # Typically lines look like: 1:name=systemd:/kubepods/...
+                parts = line.strip().split(":")
+                if len(parts) == 3:
+                    _, _, path = parts
+                    if "kubepods" in path:  # a common substring in K8s cgroups
+                        cgroup_path = path
+                        break
+    except FileNotFoundError:
+        pass
+    return cgroup_path
 
-    for cs in cstatuses:
-        if not cs.name.startswith("playout-"):
-            if not cs.state or not cs.state.terminated:
-                return False
+
+def all_other_containers_exited(sidecar_cgroup: str) -> bool:
+    """Check if all other containers have exited."""
+    for proc in psutil.process_iter(["pid", "name"]):
+        pid = proc.info["pid"]
+        if pid == 1:
+            # Usually the Pod has a 'pause' or 'init' container as PID 1, skip it if needed
+            continue
+
+        cgroup_path = get_container_cgroup_path(pid)
+        if cgroup_path and cgroup_path != sidecar_cgroup:
+            # We found a process that belongs to a different container
+            return False
+
     return True
 
 
@@ -53,31 +78,15 @@ def main() -> None:
     namespace = os.environ.get("NAMESPACE")
     job_name = os.environ.get("JOB_NAME")
     token = os.environ.get("TUSKR_JOB_TOKEN")
-    pod_name = os.environ.get("POD_NAME")
+    # This container's cgroup path
+    sidecar_cgroup = get_container_cgroup_path(os.getpid())
 
-    # If running in-cluster, use config.load_incluster_config()
-    try:
-        config.load_incluster_config()
-    except Exception:  # pylint: disable=broad-except
-        print("[sidecar] Unable to load in-cluster config; trying default config (dev mode).")
-        config.load_kube_config()
-
-    core_api = client.CoreV1Api()
-
-    print("[sidecar] Sidecar started. Polling for main containers to terminate...")
+    print("[sidecar] shareProcessNamespace sidecar started. Polling for other containers to exit...")
 
     while True:
-        try:
-            pod = core_api.read_namespaced_pod(name=pod_name, namespace=namespace)
-            if all_user_containers_terminated(pod.status):
-                print("[sidecar] All non-playout containers have terminated.")
-                break
-        except ApiException as e:
-            print(f"[sidecar] Error reading pod: {e}", file=sys.stderr)
-        except Exception as exc:
-            print(f"[sidecar] Unexpected error: {exc}", file=sys.stderr)
-
-        # Sleep a bit before re-checking
+        if all_other_containers_exited(sidecar_cgroup):
+            print("[sidecar] All non-sidecar containers have terminated.")
+            break
         time.sleep(2)
 
     # Gather outputs
