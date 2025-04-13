@@ -35,6 +35,7 @@ import kubernetes
 from helpers.encoder import CustomJsonEncoder
 from helpers.redis_client import redis_client
 from helpers.utils import (
+    redis_key_for_job_data,
     redis_key_for_job_describe,
     redis_key_for_job_logs,
     redis_key_for_job_state,
@@ -53,7 +54,7 @@ def fetch_job_description(namespace: str, job_name: str) -> None:
         redis_client.setex(describe_key, 3600, json.dumps(job_description_obj.to_dict(), cls=CustomJsonEncoder))
         logger.info(f"Job description stored for {namespace}/{job_name}")
     except Exception as e:
-        logger.warning(f"Failed to gather describe data for {namespace}/{job_name}: {str(e)}")
+        logger.warning(f"Failed to gather description data for {namespace}/{job_name}: {str(e)}")
 
 
 def poll_job_state(namespace: str, job_name: str, poll_interval: int, stop_event: threading.Event) -> None:
@@ -62,9 +63,12 @@ def poll_job_state(namespace: str, job_name: str, poll_interval: int, stop_event
     This thread continuously polls the job via the Kubernetes Batch API. When it detects that the
     job has reached a terminal state ("Succeeded" or "Failed"), it updates the state key and then exits.
     """
+    logger.info(f"Started poll_job_state for {namespace}/{job_name}")  # Added log at thread start
     state_key = redis_key_for_job_state(namespace, job_name)
+    data_key = redis_key_for_job_data(namespace, job_name)
     batch_api = kubernetes.client.BatchV1Api()
     while not stop_event.is_set():
+        logger.info(f"Polling job state iteration for {namespace}/{job_name}")  # Added debug log
         try:
             job_obj = batch_api.read_namespaced_job(job_name, namespace)
             status = job_obj.status
@@ -84,9 +88,13 @@ def poll_job_state(namespace: str, job_name: str, poll_interval: int, stop_event
                 elif not conditions and not status.active:
                     current_state = "Pending"
             redis_client.setex(state_key, 3600, current_state)
+            redis_client.setex(data_key, 3600, json.dumps(job_obj.to_dict(), cls=CustomJsonEncoder))
             logger.info(f"Updated job state for {namespace}/{job_name}: {current_state}")
             # Exit if in terminal state.
             if current_state in ("Succeeded", "Failed"):
+                logger.info(
+                    f"Terminal state reached, exiting poll_job_state for {namespace}/{job_name}"
+                )  # Added log at exit
                 return
         except Exception as e:
             logger.warning(f"Error polling state for {namespace}/{job_name}: {str(e)}")
@@ -95,30 +103,41 @@ def poll_job_state(namespace: str, job_name: str, poll_interval: int, stop_event
 
 def poll_job_description(namespace: str, job_name: str, poll_interval: int, stop_event: threading.Event) -> None:
     """Periodically poll and update the job description."""
+    logger.info(f"Started poll_job_description for {namespace}/{job_name}")  # Added log at thread start
     while not stop_event.is_set():
+        logger.info(f"Polling job description for {namespace}/{job_name}")  # Added debug log
         try:
             fetch_job_description(namespace, job_name)
         except Exception as e:
             logger.warning(f"Error polling description for {namespace}/{job_name}: {str(e)}")
         time.sleep(poll_interval)
+    logger.info(f"Exiting poll_job_description for {namespace}/{job_name}")  # Added log at exit
 
 
 def poll_job_logs(namespace: str, job_name: str, poll_interval: int, stop_event: threading.Event) -> None:
     """Periodically poll and update the job logs.
 
-    For each pod associated with the job, fetch the latest logs (using tailing)
-    and update the aggregated logs in Redis.
+    This function waits until the job is in a running (or terminal) state before fetching logs.
     """
+    logger.info(f"Started poll_job_logs for {namespace}/{job_name}")  # Added log at thread start
     core_api = kubernetes.client.CoreV1Api()
     logs_key = redis_key_for_job_logs(namespace, job_name)
     aggregated_logs: Dict[str, str] = {}
+    state_key = redis_key_for_job_state(namespace, job_name)
 
     while not stop_event.is_set():
+        logger.info(f"Polling job logs iteration for {namespace}/{job_name}")  # Added debug log
         try:
+            # Check the job state; proceed only if Running or later.
+            job_state_bytes = redis_client.get(state_key)
+            current_state = job_state_bytes.decode("utf-8") if job_state_bytes else "Pending"
+            if current_state not in ("Running", "Succeeded", "Failed"):
+                time.sleep(poll_interval)
+                continue
+
             pods = core_api.list_namespaced_pod(namespace, label_selector=f"job-name={job_name}").items
             for pod in pods:
                 pod_name = pod.metadata.name
-                # Process each container (skip specific ones if needed).
                 for container in pod.spec.containers:
                     if container.name in ("playout-init", "playout-sidecar"):
                         continue
@@ -140,43 +159,74 @@ def poll_job_logs(namespace: str, job_name: str, poll_interval: int, stop_event:
         except Exception as e:
             logger.warning(f"Error polling logs for {namespace}/{job_name}: {str(e)}")
         time.sleep(poll_interval)
+    logger.info(f"Exiting poll_job_logs for {namespace}/{job_name}")  # Added log at exit
     # Optionally, mark that log polling is complete.
-    state_key = redis_key_for_job_state(namespace, job_name)
-    redis_client.setex(state_key, 3600, "Completed logs")
+    redis_client.setex(logs_key, 3600, json.dumps(list(aggregated_logs.values()), cls=CustomJsonEncoder))
 
 
 def poll_job(namespace: str, job_name: str, poll_interval: int = 2) -> None:
     """Poll job description, state, and logs concurrently until a terminal state is reached.
 
-    This function starts three threads that update the Redis keys for description, state, and logs.
-    Once the job reaches a terminal state ("Succeeded" or "Failed"), it signals the other threads to stop,
-    performs a final update, and sends a callback if one is registered.
+    As soon as polling starts the job state, data, and description are updated.
+    Once the state becomes "Running", logs polling begins.
     """
+    logger.info(f"Started poll_job for {namespace}/{job_name}")  # Added log at start
     stop_event = threading.Event()
 
+    # Start state and description polling immediately.
     state_thread = threading.Thread(target=poll_job_state, args=(namespace, job_name, poll_interval, stop_event))
     description_thread = threading.Thread(
         target=poll_job_description, args=(namespace, job_name, poll_interval, stop_event)
     )
-    logs_thread = threading.Thread(target=poll_job_logs, args=(namespace, job_name, poll_interval, stop_event))
-
-    # Start all polling threads.
     state_thread.start()
     description_thread.start()
-    logs_thread.start()
+
+    # Perform an initial update of job data.
+    batch_api = kubernetes.client.BatchV1Api()
+    try:
+        job_obj = batch_api.read_namespaced_job(job_name, namespace)
+        redis_client.setex(
+            redis_key_for_job_data(namespace, job_name),
+            3600,
+            json.dumps(job_obj.to_dict(), cls=CustomJsonEncoder),
+        )
+    except Exception as e:
+        logger.error(f"Failed initial update of job data for {namespace}/{job_name}: {str(e)}")
+
+    logs_thread = None
+    # Wait until the job state indicates it is running (or terminal) before starting log polling.
+    while True:
+        logger.info(f"Waiting for job state update for {namespace}/{job_name}")  # Added debug log in loop
+        try:
+            job_state_bytes = redis_client.get(redis_key_for_job_state(namespace, job_name))
+            if job_state_bytes:
+                current_state = job_state_bytes.decode("utf-8")
+                if current_state == "Running":
+                    # Start logs polling as soon as the job is running.
+                    logs_thread = threading.Thread(
+                        target=poll_job_logs, args=(namespace, job_name, poll_interval, stop_event)
+                    )
+                    logs_thread.start()
+                    break
+                elif current_state in ("Succeeded", "Failed"):
+                    break
+            time.sleep(poll_interval)
+        except Exception as e:
+            logger.warning(f"Error while waiting for job state to update: {str(e)}")
+            time.sleep(poll_interval)
 
     # Wait for the state polling thread to detect a terminal state.
     state_thread.join()
 
-    # Signal to the other threads that they should exit.
+    # Signal all polling threads to stop.
     stop_event.set()
     description_thread.join()
-    logs_thread.join()
+    if logs_thread:
+        logs_thread.join()
 
-    logger.info(f"Polling complete for {namespace}/{job_name}")
+    logger.info(f"Completed polling threads for {namespace}/{job_name}")  # Added log after joining threads
 
     # Retrieve final job state and details.
-    batch_api = kubernetes.client.BatchV1Api()
     try:
         job_obj = batch_api.read_namespaced_job(job_name, namespace)
     except Exception as e:
@@ -235,26 +285,19 @@ def watch_jobs(event: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> 
 
     namespace = job_obj["metadata"]["namespace"]
     job_name = job_obj["metadata"]["name"]
-    poll_interval = 2  # Default poll interval in seconds.
 
     if not namespace or not job_name:
         logger.error("Namespace and job name are required.")
         return
 
     # Check if this is a job created event by inspecting the job object.
-    job_obj = event.get("object")
-    if job_obj:
-        metadata = job_obj.get("metadata", {})
-        labels = metadata.get("labels", {})
-        if labels.get("tuskr.io/launched-by") == "tuskr":
-            logger.info(f"Starting job watch for {namespace}/{job_name}")
-            import threading  # Ensure threading is imported.
-
-            t = threading.Thread(target=poll_job, args=(namespace, job_name, poll_interval))
-            t.daemon = True
-            t.start()
-            logger.info(f"Started asynchronous poll_job for {namespace}/{job_name}")
-            return
-        else:
-            logger.info(f"Job {namespace}/{job_name} not launched by tuskr; skipping poll_job")
-            return
+    metadata = job_obj.get("metadata", {})
+    labels = metadata.get("labels", {})
+    if labels.get("tuskr.io/launched-by") == "tuskr":
+        logger.info(f"Starting job watch for {namespace}/{job_name}")
+        t = threading.Thread(target=poll_job, args=(namespace, job_name))
+        t.daemon = True
+        t.start()
+        logger.info(f"Started asynchronous poll_job for {namespace}/{job_name}")
+    else:
+        logger.info(f"Job {namespace}/{job_name} not launched by tuskr; skipping poll_job")
