@@ -145,7 +145,7 @@ def poll_job_logs(namespace: str, job_name: str, poll_interval: int, stop_event:
     redis_client.setex(state_key, 3600, "Completed logs")
 
 
-def watch_job(namespace: str, job_name: str, poll_interval: int = 2) -> None:
+def watch_jobs(namespace: str, job_name: str, poll_interval: int = 2) -> None:
     """Poll job description, state, and logs concurrently until a terminal state is reached.
 
     This function starts three threads that update the Redis keys for description, state, and logs.
