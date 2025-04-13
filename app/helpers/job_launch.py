@@ -195,7 +195,8 @@ __PY__
                     # Run the script
                     python /playout_init.py
 
-                    chmod -R 755 /mnt/data/inputs
+                    chmod -R 666 /mnt/data/inputs
+                    chmod -R 666 /mnt/data/outputs
                     """
                 ],
                 "env": [
@@ -205,6 +206,7 @@ __PY__
                 ],
                 "volumeMounts": [
                     {"name": "inputs-volume", "mountPath": "/mnt/data/inputs"},
+                    {"name": "outputs-volume", "mountPath": "/mnt/data/outputs"},
                 ],
             }
         ]
@@ -230,8 +232,6 @@ __SIDE__
 
                 # Install dependencies
                 pip install --no-cache-dir httpx kubernetes
-
-                chmod -R 755 /mnt/data/outputs
 
                 # Run the script
                 python /playout_sidecar.py
