@@ -183,20 +183,19 @@ class LaunchResource:
                 "args": [
                     f"""set -ex
                     # Write the Python script into a file
-                    cat <<'__PY__' > /init_fetch.py
+                    cat <<'__PY__' > /playout_init.py
 {init_fetch_script_content}
 __PY__
 
-                    chmod +x /init_fetch.py
+                    chmod +x /playout_init.py
 
-                    # Install dependencies needed by init_fetch.py
+                    # Install dependencies needed by playout_init.py
                     pip install --no-cache-dir httpx
 
                     chmod -R 755 /mnt/data/inputs
-                    chmod -R 755 /mnt/data/outputs
 
                     # Run the script
-                    python /init_fetch.py
+                    python /playout_init.py
                     """
                 ],
                 "env": [
@@ -223,17 +222,17 @@ __PY__
             "args": [
                 f"""set -ex
                 # Write the Python script into a file
-                cat <<'__SIDE__' > /sidecar.py
+                cat <<'__SIDE__' > /playout_sidecar.py
 {sidecar_script_content}
 __SIDE__
 
-                chmod +x /sidecar.py
+                chmod +x /playout_sidecar.py
 
                 # Install dependencies
                 pip install --no-cache-dir httpx kubernetes
 
                 # Run the script
-                python /sidecar.py
+                python /playout_sidecar.py
                 """
             ],
             "env": [
