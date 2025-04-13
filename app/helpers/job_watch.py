@@ -389,13 +389,13 @@ def send_callback(namespace: str, job_name: str, state: str, job_obj: Any) -> No
                 logger.error(f"Callback failed for {namespace}/{job_name}: {str(e)}")
 
 
-def handle_create_job(job_obj: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> None:
+def handle_create_job(job_obj: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> Any:
     """Start a new thread to poll job state, description, and logs when a job is created."""
     namespace = job_obj["metadata"]["namespace"]
     job_name = job_obj["metadata"]["name"]
     if not namespace or not job_name:
         logger.error("Namespace and job name are required.")
-        return
+        return {"message": "Namespace and job name are required."}
 
     metadata = job_obj.get("metadata", {})
     annotations = metadata.get("annotations", {})
@@ -409,14 +409,16 @@ def handle_create_job(job_obj: Dict[str, Any], logger: logging.Logger, **kwargs:
     else:
         logger.info(f"Job {namespace}/{job_name} not launched by tuskr; skipping.")
 
+    return {"message": f"Created JobTemplate {job_name}"}
 
-def handle_delete_job(job_obj: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> None:
+
+def handle_delete_job(job_obj: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> Any:
     """Handle job deletion events."""
     namespace = job_obj["metadata"]["namespace"]
     job_name = job_obj["metadata"]["name"]
     if not namespace or not job_name:
         logger.error("Namespace and job name are required.")
-        return
+        return {"message": "Namespace and job name are required."}
 
     metadata = job_obj.get("metadata", {})
     annotations = metadata.get("annotations", {})
@@ -433,14 +435,16 @@ def handle_delete_job(job_obj: Dict[str, Any], logger: logging.Logger, **kwargs:
     else:
         logger.info(f"Job {namespace}/{job_name} not launched by tuskr; skipping delete handling.")
 
+    return {"message": f"Deleted Job {namespace}/{job_name}"}
 
-def handle_update_job(job_obj: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> None:
+
+def handle_update_job(job_obj: Dict[str, Any], logger: logging.Logger, **kwargs: Any) -> Any:
     """Handle job update events."""
     namespace = job_obj["metadata"]["namespace"]
     job_name = job_obj["metadata"]["name"]
     if not namespace or not job_name:
         logger.error("Namespace and job name are required.")
-        return
+        return {"message": "Namespace and job name are required."}
 
     metadata = job_obj.get("metadata", {})
     annotations = metadata.get("annotations", {})
@@ -456,3 +460,5 @@ def handle_update_job(job_obj: Dict[str, Any], logger: logging.Logger, **kwargs:
             logger.info(f"No state found for {namespace}/{job_name} to send callback.")
     else:
         logger.info(f"Job {namespace}/{job_name} not launched by tuskr; skipping update handling.")
+
+    return {"message": f"Updated Job {namespace}/{job_name}"}
