@@ -27,7 +27,7 @@ from typing import Any
 import kopf
 import kubernetes
 
-from helpers.job_watch import handle_create_job, handle_delete_job, handle_update_job
+from helpers.job_watch import handle_create_job, handle_update_job
 from helpers.jobtemplate_watch import handle_create_jobtemplate, handle_delete_jobtemplate, handle_update_jobtemplate
 from helpers.server import start_http_server
 
@@ -81,9 +81,3 @@ def on_job_create(body: dict[str, Any], **kwargs: Any) -> Any:  # Changed param 
 def on_job_update(body: dict[str, Any], **kwargs: Any) -> Any:
     """Handle update of a Kubernetes Job."""
     return handle_update_job(body, **kwargs)
-
-
-@kopf.on.delete("batch", "v1", "jobs")  # type: ignore
-def on_job_delete(body: dict[str, Any], **kwargs: Any) -> Any:
-    """Handle deletion of a Kubernetes Job."""
-    return handle_delete_job(body, **kwargs)
