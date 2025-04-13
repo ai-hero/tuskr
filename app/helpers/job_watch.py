@@ -274,7 +274,7 @@ def poll_job_logs(namespace: str, job_name: str, poll_interval: int, stop_event:
     redis_client.setex(logs_key, 3600, json.dumps(aggregated_logs, cls=CustomJsonEncoder))
 
 
-def poll_job(namespace: str, job_name: str, poll_interval: int = 2) -> None:
+def poll_job(namespace: str, job_name: str, poll_interval: int = 4) -> None:
     """Poll job description, state, and logs concurrently until a terminal state is reached.
 
     1) Spawns a thread for poll_job_state (updates job state + job object).
