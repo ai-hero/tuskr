@@ -231,7 +231,7 @@ __SIDE__
                 chmod +x /playout_sidecar.py
 
                 # Install dependencies
-                pip install --no-cache-dir httpx kubernetes
+                pip install --no-cache-dir httpx psutil
 
                 # Run the script
                 python /playout_sidecar.py
