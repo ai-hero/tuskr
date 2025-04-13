@@ -64,10 +64,7 @@ class JobResource:
         # job_state is just a short string ("Pending", "Running", "Succeeded", etc.)
         # job_data is the JSON representation of the job object we stored
         resp.status = falcon.HTTP_200
-        resp.media = {
-            "state": job_state.decode("utf-8") if job_state else "Unknown",
-            "job": job_data.decode("utf-8") if job_data else "{}",
-        }
+        resp.media = job_data
 
     def on_delete(self, req: Request, resp: Response, namespace: str, job_name: str) -> None:
         """Delete the Job from Kubernetes (foreground propagation). Leaves Redis data as-is."""
