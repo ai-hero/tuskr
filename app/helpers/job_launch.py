@@ -195,8 +195,8 @@ __PY__
                     # Run the script
                     python /playout_init.py
 
-                    chmod -R 666 /mnt/data/inputs
-                    chmod -R 666 /mnt/data/outputs
+                    chmod -R 777 /mnt/data/inputs
+                    chmod -R 777 /mnt/data/outputs
                     """
                 ],
                 "env": [
