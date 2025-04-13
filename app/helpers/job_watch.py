@@ -54,6 +54,9 @@ def fetch_job_description(namespace: str, job_name: str) -> None:
         redis_client.setex(describe_key, 3600, json.dumps(job_description_obj.to_dict(), cls=CustomJsonEncoder))
         logger.info(f"Job description stored for {namespace}/{job_name}")
     except Exception as e:
+        if "404" in str(e) or "NotFound" in str(e):
+            logger.info(f"Job description not found for {namespace}/{job_name}, exiting fetch_job_description")
+            raise
         logger.warning(f"Failed to gather description data for {namespace}/{job_name}: {str(e)}")
 
 
@@ -97,6 +100,10 @@ def poll_job_state(namespace: str, job_name: str, poll_interval: int, stop_event
                 )  # Added log at exit
                 return
         except Exception as e:
+            if "404" in str(e) or "NotFound" in str(e):
+                logger.info(f"Job {namespace}/{job_name} not found. Exiting poll_job_state")
+                redis_client.setex(state_key, 3600, "NotFound")
+                return
             logger.warning(f"Error polling state for {namespace}/{job_name}: {str(e)}")
         time.sleep(poll_interval)
 
@@ -109,6 +116,11 @@ def poll_job_description(namespace: str, job_name: str, poll_interval: int, stop
         try:
             fetch_job_description(namespace, job_name)
         except Exception as e:
+            if "404" in str(e) or "NotFound" in str(e):
+                logger.info(
+                    f"Job {namespace}/{job_name} not found during description polling. Exiting poll_job_description"
+                )
+                return
             logger.warning(f"Error polling description for {namespace}/{job_name}: {str(e)}")
         time.sleep(poll_interval)
     logger.info(f"Exiting poll_job_description for {namespace}/{job_name}")  # Added log at exit
@@ -263,7 +275,8 @@ def poll_job(namespace: str, job_name: str, poll_interval: int = 2) -> None:
                     headers["Authorization"] = callback_info["authorization"]
                 full_url = f"{callback_url.rstrip('/')}/jobs/{namespace}/{job_name}"
                 with httpx.Client() as client:
-                    response = client.post(full_url, json=job_dict, headers=headers)
+                    job_json = json.loads(json.dumps(job_dict, cls=CustomJsonEncoder))
+                    response = client.post(full_url, json=job_json, headers=headers)
                     response.raise_for_status()
                 # Remove the callback registration for terminal jobs.
                 if final_state in ("Succeeded", "Failed"):

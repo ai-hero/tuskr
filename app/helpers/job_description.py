@@ -58,4 +58,4 @@ class JobDescribeResource:
         # Decode using CustomJsonDecoder
         desc_data = json.loads(raw.decode("utf-8"), cls=CustomJsonDecoder)
         resp.status = falcon.HTTP_200
-        resp.media = {"describe": desc_data}
+        resp.media = desc_data
