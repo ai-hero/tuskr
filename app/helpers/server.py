@@ -32,6 +32,7 @@ import falcon
 from falcon import media
 
 from helpers.encoder import CustomJsonDecoder, CustomJsonEncoder
+from helpers.healthcheck import HealthCheckResource  # new import
 from helpers.job_context import JobContextResource
 from helpers.job_description import JobDescribeResource
 from helpers.job_launch import LaunchResource
@@ -59,8 +60,10 @@ def start_http_server(port: int = 8080) -> None:
     app.add_route("/jobs/{namespace}/{job_name}", JobResource())  # Job state (GET/DELETE)
     app.add_route("/jobs/{namespace}/{job_name}/describe", JobDescribeResource())  # Describe
     app.add_route("/jobs/{namespace}/{job_name}/logs", JobLogsResource())  # Logs
-    # New endpoint for job to retrieve env-vars, inputs, or post outputs
-    app.add_route("/jobs/{namespace}/{job_name}/context", JobContextResource())
+    app.add_route("/jobs/{namespace}/{job_name}/context", JobContextResource())  # Job context
+    app.add_route("/", HealthCheckResource())
+
+    logger.info("Starting the HTTP server...")
 
     def run_server() -> None:
         with make_server("", port, app) as httpd:
