@@ -107,14 +107,9 @@ def fetch_all_job_pod_logs(namespace: str, job_name: str) -> None:
                         _preload_content=False,
                         tail_lines=10,
                     )
-                    # Replace loop checking is_open() with a loop that reads until no chunk is read
+                    # New loop reading fixed-size chunks until no more data is received.
                     while True:
-                        log_stream.update(timeout=1)
-                        chunk = b""
-                        if hasattr(log_stream, "peek_stdout") and log_stream.peek_stdout():
-                            chunk = log_stream.read_stdout()
-                        elif hasattr(log_stream, "peek_stderr") and log_stream.peek_stderr():
-                            chunk = log_stream.read_stderr()
+                        chunk = log_stream.read(1024)
                         if not chunk:
                             break
                         with logs_lock:
