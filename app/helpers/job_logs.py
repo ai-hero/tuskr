@@ -28,7 +28,7 @@ import logging
 import falcon
 from falcon import Request, Response
 
-from helpers.encoders import CustomJsonDecoder
+from helpers.encoder import CustomJsonDecoder
 from helpers.redis_client import redis_client
 from helpers.utils import redis_key_for_job_logs
 
