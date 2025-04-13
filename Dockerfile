@@ -1,5 +1,7 @@
 FROM python:3.13-alpine
 
+RUN apk add -y gcc p3-dev musl-dev linux-headers
+
 # It's often good practice to create a non-root user
 RUN adduser -D -h /home/user user
 
