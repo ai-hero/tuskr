@@ -376,7 +376,6 @@ def send_callback(namespace: str, job_name: str, state: str, job_obj: Any) -> No
                 if callback_info.get("authorization"):
                     headers["Authorization"] = callback_info["authorization"]
                 full_url = f"{callback_url.rstrip('/')}/jobs/{namespace}/{job_name}"
-                print(json.dumps(job_dict, cls=CustomJsonEncoder, indent=2))
                 with httpx.Client() as client:
                     job_json = json.loads(json.dumps(job_dict, cls=CustomJsonEncoder))
                     response = client.post(full_url, json=job_json, headers=headers)
