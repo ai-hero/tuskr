@@ -65,6 +65,7 @@ def main() -> None:
     env_vars = context.get("env_vars", {})
     env_file_path = input_dir / ".env"
     with env_file_path.open("w") as env_file:
+        # will be empty if no env_vars
         for varname, value in env_vars.items():
             # Quote or escape if needed
             line = f'{varname}="{value}"\n'
