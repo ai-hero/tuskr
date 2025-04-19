@@ -52,6 +52,8 @@ def main() -> None:
     # Prepare input directory
     input_dir = Path("/mnt/data/inputs")
     input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = Path("/mnt/data/outputs")
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Write each input file
     inputs = context.get("inputs", {})

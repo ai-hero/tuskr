@@ -56,9 +56,8 @@ logger.setLevel(logging.INFO)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INIT_FETCH_SCRIPT_PATH = os.path.join(BASE_DIR, "playout_init.py")
 SIDECAR_SCRIPT_PATH = os.path.join(BASE_DIR, "playout_sidecar.py")
-
-# Location of the runtime wrapper written by the init‑container
-WRAPPER_PATH = "/mnt/data/run_with_env.sh"
+ENTRYPOINT_SCRIPT_PATH = os.path.join(BASE_DIR, "playout_entrypoint.sh")
+ENTRYPOINT_PATH = "/mnt/data/playout_entrypoint.sh"
 
 
 def load_local_script(script_path: str) -> str:
@@ -160,8 +159,6 @@ class LaunchResource:
         # 4a) Shared emptyDir
         pod_spec["volumes"] = pod_spec.get("volumes", []) + [{"name": "data-volume", "emptyDir": {}}]
 
-        WRAPPER_PATH = "/mnt/data/run_with_env.sh"
-
         # 4b) Mutate the *main* container (first in list) if present
         if containers:
             main = containers[0]
@@ -178,30 +175,34 @@ class LaunchResource:
         # 5) Init‑container: fetch inputs + emit the wrapper script
         # ------------------------------------------------------------------
         init_fetch_script = load_local_script(INIT_FETCH_SCRIPT_PATH)
+        entrypoint_script = load_local_script(ENTRYPOINT_SCRIPT_PATH)
+
         init_container = {
             "name": "playout-init",
             "image": "python:3.9-slim",
             "command": ["sh", "-c"],
             "args": [
-                f"""set -ex
-cat <<'__PY__' > /playout_init.py
+                f"""
+        set -ex
+
+        # 1) Python helper that fetches inputs/outputs
+        cat <<'__PY__' > /playout_init.py
 {init_fetch_script}
 __PY__
-chmod +x /playout_init.py
-pip install --no-cache-dir httpx
-python /playout_init.py
 
-cat <<'__WRAP__' > {WRAPPER_PATH}
-#!/bin/sh
-set -a
-[ -f /mnt/data/inputs/.env ] && . /mnt/data/inputs/.env
-set +a
-exec "$@"
-__WRAP__
-chmod +x {WRAPPER_PATH}
+        # 2) The unified wrapper / entry‑point
+        cat <<'__ENT__' > {ENTRYPOINT_PATH}
+{entrypoint_script}
+__ENT__
+        chmod +x {ENTRYPOINT_PATH}
 
-chmod -R 777 /mnt/data /mnt/data/inputs /mnt/data/outputs
-"""
+        # 3) Run the Python init code
+        pip install --no-cache-dir httpx
+        python /playout_init.py
+
+        # 4) Fix permissions for downstream containers
+        chmod -R 777 /mnt/data /mnt/data/inputs /mnt/data/outputs
+        """
             ],
             "env": [
                 {"name": "NAMESPACE", "value": jt_ns},
@@ -228,7 +229,7 @@ cat <<'__SIDE__' > /playout_sidecar.py
 __SIDE__
 chmod +x /playout_sidecar.py
 pip install --no-cache-dir httpx psutil
-exec {WRAPPER_PATH} python /playout_sidecar.py
+exec {ENTRYPOINT_PATH} python /playout_sidecar.py
 """,
             ],
             "env": [
@@ -251,7 +252,7 @@ exec {WRAPPER_PATH} python /playout_sidecar.py
             if not original_cmd:  # image ENTRYPOINT – leave untouched
                 continue
             joined = " ".join(shlex.quote(tok) for tok in original_cmd)
-            c["command"] = ["/bin/sh", "-c", f"exec {WRAPPER_PATH} {joined}"]
+            c["command"] = ["/bin/sh", "-c", f"exec {ENTRYPOINT_PATH} {joined}"]
 
         pod_spec["containers"] = containers
 
