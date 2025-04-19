@@ -175,7 +175,7 @@ class LaunchResource:
             # Mount shared volumes
             main.setdefault("volumeMounts", []).extend(
                 [
-                    {"name": "inputs-volume", "mountPath": "/mnt/data/inputs"},
+                    {"name": "inputs-volume", "mountPath": "/mnt/data"},
                     {"name": "outputs-volume", "mountPath": "/mnt/data/outputs"},
                 ]
             )
@@ -219,7 +219,7 @@ __WRAP__
                     {"name": "TUSKR_JOB_TOKEN", "value": token},
                 ],
                 "volumeMounts": [
-                    {"name": "inputs-volume", "mountPath": "/mnt/data/inputs"},
+                    {"name": "inputs-volume", "mountPath": "/mnt/data"},
                     {"name": "outputs-volume", "mountPath": "/mnt/data/outputs"},
                 ],
             }
