@@ -39,7 +39,7 @@ Key changes
 import json
 import logging
 import os
-from typing import List
+from typing import Any, List
 
 import falcon
 import kubernetes
@@ -71,11 +71,24 @@ def load_local_script(script_path: str) -> str:
 class LaunchResource:
     """Falcon resource handling POST /launch to create a Job from a JobTemplate."""
 
-    def on_post(self, req: Request, resp: Response) -> None:  # noqa: C901 – method is long but clear
-        """Handle POST request to create a Job from a JobTemplate."""
-        # --------------------------------------
-        # 1) Parse incoming request data
-        # --------------------------------------
+    def on_post(self, req: Request, resp: Response) -> None:  # noqa: C901 – long but explicit
+        """Handle POST /launch ‑– create a batch/v1 Job from a JobTemplate.
+
+        Handle POST /launch ‑– create a batch/v1 Job from a JobTemplate, inject a
+        thin wrapper that sources /mnt/data/inputs/.env for every runtime
+        container, and start background polling threads.
+
+        The tricky bit: the wrapper script is written by the *init‑container*
+        into an emptyDir volume; therefore every *runtime* container must invoke
+        it **from** a binary that already lives inside the image (e.g. /bin/sh),
+        otherwise runc will try to exec it before the volume is mounted and the
+        container will fail with ENOENT.
+        """
+        import shlex  # local import to avoid polluting the module namespace
+
+        # ------------------------------------------------------------------
+        # 1) Parse and validate the incoming request
+        # ------------------------------------------------------------------
         try:
             data = req.media
         except Exception as e:  # pragma: no cover – malformed JSON
@@ -83,241 +96,204 @@ class LaunchResource:
             resp.media = {"error": f"Invalid request format: {str(e)}"}
             return
 
-        # Required fields from the request
-        jobtemplate_info = data.get("jobTemplate", {})
-        jobtemplate_name = jobtemplate_info.get("name")
-        jobtemplate_namespace = jobtemplate_info.get("namespace")
+        jt_info = data.get("jobTemplate", {})
+        jt_name = jt_info.get("name")
+        jt_ns = jt_info.get("namespace")
         command_override: List[str] = data.get("command", [])
         args_override: List[str] = data.get("args", [])
         env_vars = data.get("env_vars", {})
         input_files = data.get("inputs", {})
 
-        if not jobtemplate_name or not jobtemplate_namespace:
+        if not jt_name or not jt_ns:
             resp.status = falcon.HTTP_400
             resp.media = {"error": "Must provide 'jobTemplate.name' and 'jobTemplate.namespace'."}
             return
 
-        # --------------------------------------
-        # 2) Retrieve the JobTemplate CRD
-        # --------------------------------------
+        # ------------------------------------------------------------------
+        # 2) Fetch the JobTemplate CRD
+        # ------------------------------------------------------------------
         crd_api = kubernetes.client.CustomObjectsApi()
         try:
             jobtemplate = crd_api.get_namespaced_custom_object(
                 group="tuskr.io",
                 version="v1alpha1",
-                namespace=jobtemplate_namespace,
+                namespace=jt_ns,
                 plural="jobtemplates",
-                name=jobtemplate_name,
+                name=jt_name,
             )
         except kubernetes.client.exceptions.ApiException as e:
             if e.status == 404:
-                msg = f"JobTemplate '{jobtemplate_name}' not found " f"in namespace '{jobtemplate_namespace}'."
-                logger.error(msg)
                 resp.status = falcon.HTTP_404
-                resp.media = {"error": msg}
+                resp.media = {"error": f"JobTemplate '{jt_name}' not found in '{jt_ns}'."}
                 return
             logger.exception("Unexpected error fetching JobTemplate.")
             resp.status = falcon.HTTP_500
             resp.media = {"error": str(e)}
             return
 
-        # --------------------------------------
-        # 3) Generate Job name & get base spec
-        # --------------------------------------
+        # ------------------------------------------------------------------
+        # 3) Basic book‑keeping (Job name, token, Redis context, …)
+        # ------------------------------------------------------------------
         random_suffix = generate_random_suffix()
-        job_name = f"{jobtemplate_name}-{random_suffix}"
-        target_namespace = jobtemplate_namespace
+        job_name = f"{jt_name}-{random_suffix}"
 
-        job_spec_from_template = jobtemplate.get("spec", {}).get("jobSpec", {}).get("template", {})
-        if not job_spec_from_template:
-            msg = f"No 'spec.jobSpec.template' found in JobTemplate '{jobtemplate_name}'."
-            logger.warning(msg)
+        jt_pod_template = jobtemplate.get("spec", {}).get("jobSpec", {}).get("template")
+        if not jt_pod_template:
             resp.status = falcon.HTTP_400
-            resp.media = {"error": msg}
+            resp.media = {"error": f"No 'spec.jobSpec.template' in JobTemplate '{jt_name}'."}
             return
 
-        # --------------------------------------
-        # 4) Save context data to Redis (TTL 1 h)
-        # --------------------------------------
+        # Redis context (TTL 1 h)
         token = generate_random_suffix(length=20)
-        context_key = f"{JOB_CONTEXT_PREFIX}:{jobtemplate_namespace}:{job_name}"
-        redis_client.setex(context_key, 3600, json.dumps({"env_vars": env_vars, "inputs": input_files}))
-
+        ctx_key = f"{JOB_CONTEXT_PREFIX}:{jt_ns}:{job_name}"
+        redis_client.setex(ctx_key, 3600, json.dumps({"env_vars": env_vars, "inputs": input_files}))
         token_key = f"{TOKEN_PREFIX}:{token}"
-        redis_client.setex(token_key, 3600, json.dumps({"namespace": jobtemplate_namespace, "job_name": job_name}))
+        redis_client.setex(token_key, 3600, json.dumps({"namespace": jt_ns, "job_name": job_name}))
 
-        # --------------------------------------
-        # 5) Mutate the Pod spec from the template
-        # --------------------------------------
-        pod_spec = job_spec_from_template.get("spec", {})
+        # ------------------------------------------------------------------
+        # 4) Mutate the Pod spec
+        # ------------------------------------------------------------------
+        pod_spec = jt_pod_template.setdefault("spec", {})
         pod_spec["shareProcessNamespace"] = True
-        containers = pod_spec.get("containers", [])
+        containers: list[dict[str, Any]] = pod_spec.get("containers", [])
 
-        # 5a) Volumes for inputs and outputs
-        pod_spec["volumes"] = pod_spec.get("volumes", []) + [
-            {"name": "data-volume", "emptyDir": {}},
-        ]
+        # 4a) Shared emptyDir
+        pod_spec["volumes"] = pod_spec.get("volumes", []) + [{"name": "data-volume", "emptyDir": {}}]
 
-        # 5b) Main container overrides & env injection
+        WRAPPER_PATH = "/mnt/data/run_with_env.sh"
+
+        # 4b) Mutate the *main* container (first in list) if present
         if containers:
             main = containers[0]
 
-            # Apply command/args overrides from the request (optional)
             if command_override:
                 main["command"] = command_override
             if args_override:
                 main["args"] = args_override
 
-            # Add the job token so the side‑car has context
             main.setdefault("env", []).append({"name": "TUSKR_JOB_TOKEN", "value": token})
+            main.setdefault("volumeMounts", []).append({"name": "data-volume", "mountPath": "/mnt/data"})
 
-            # Mount shared volumes
-            main.setdefault("volumeMounts", []).extend(
-                [
-                    {"name": "data-volume", "mountPath": "/mnt/data"},
-                ]
-            )
-
-        # --------------------------------------
-        # 6) Init‑container: fetch inputs **and** drop the wrapper script
-        # --------------------------------------
+        # ------------------------------------------------------------------
+        # 5) Init‑container: fetch inputs + emit the wrapper script
+        # ------------------------------------------------------------------
         init_fetch_script = load_local_script(INIT_FETCH_SCRIPT_PATH)
-
-        init_containers = [
-            {
-                "name": "playout-init",
-                "image": "python:3.9-slim",
-                "command": ["sh", "-c"],
-                "args": [
-                    f"""set -ex
-                    # --- python helper that pulls env / inputs from redis ---
-                    cat <<'__PY__' > /playout_init.py
+        init_container = {
+            "name": "playout-init",
+            "image": "python:3.9-slim",
+            "command": ["sh", "-c"],
+            "args": [
+                f"""set -ex
+cat <<'__PY__' > /playout_init.py
 {init_fetch_script}
 __PY__
-                    chmod +x /playout_init.py
-                    pip install --no-cache-dir httpx
-                    python /playout_init.py
+chmod +x /playout_init.py
+pip install --no-cache-dir httpx
+python /playout_init.py
 
-                    # --- write the thin wrapper so runtime containers inherit the env ---
-                    cat <<'__WRAP__' > {WRAPPER_PATH}
+cat <<'__WRAP__' > {WRAPPER_PATH}
 #!/bin/sh
-set -a                          # export every key=value we source
+set -a
 [ -f /mnt/data/inputs/.env ] && . /mnt/data/inputs/.env
 set +a
-exec "$@"                     # jump to the real entrypoint/command
+exec "$@"
 __WRAP__
-                    chmod +x {WRAPPER_PATH}
+chmod +x {WRAPPER_PATH}
 
-                    chmod -R 777 /mnt/data /mnt/data/inputs /mnt/data/outputs
-                    """
-                ],
-                "env": [
-                    {"name": "NAMESPACE", "value": jobtemplate_namespace},
-                    {"name": "JOB_NAME", "value": job_name},
-                    {"name": "TUSKR_JOB_TOKEN", "value": token},
-                ],
-                "volumeMounts": [
-                    {"name": "data-volume", "mountPath": "/mnt/data"},
-                ],
-            }
-        ]
-        pod_spec["initContainers"] = init_containers
+chmod -R 777 /mnt/data /mnt/data/inputs /mnt/data/outputs
+"""
+            ],
+            "env": [
+                {"name": "NAMESPACE", "value": jt_ns},
+                {"name": "JOB_NAME", "value": job_name},
+                {"name": "TUSKR_JOB_TOKEN", "value": token},
+            ],
+            "volumeMounts": [{"name": "data-volume", "mountPath": "/mnt/data"}],
+        }
+        pod_spec["initContainers"] = [init_container]
 
-        # --------------------------------------
-        # 7) Side‑car container (also wrapped)
-        # --------------------------------------
+        # ------------------------------------------------------------------
+        # 6) Side‑car container (invokes the wrapper *via* /bin/sh)
+        # ------------------------------------------------------------------
         sidecar_py = load_local_script(SIDECAR_SCRIPT_PATH)
-
         sidecar_container = {
             "name": "playout-sidecar",
             "image": "python:3.9-slim",
-            # We "wrap" its original entrypoint (python /playout_sidecar.py) with the env loader
-            "command": [WRAPPER_PATH, "python", "/playout_sidecar.py"],
-            "args": [],
+            "command": [
+                "/bin/sh",
+                "-c",
+                f"""set -ex
+cat <<'__SIDE__' > /playout_sidecar.py
+{sidecar_py}
+__SIDE__
+chmod +x /playout_sidecar.py
+pip install --no-cache-dir httpx psutil
+exec {WRAPPER_PATH} python /playout_sidecar.py
+""",
+            ],
             "env": [
-                {"name": "NAMESPACE", "value": jobtemplate_namespace},
+                {"name": "NAMESPACE", "value": jt_ns},
                 {"name": "JOB_NAME", "value": job_name},
                 {"name": "TUSKR_JOB_TOKEN", "value": token},
                 {"name": "POD_NAME", "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}},
             ],
-            "volumeMounts": [
-                {"name": "data-volume", "mountPath": "/mnt/data"},
-            ],
+            "volumeMounts": [{"name": "data-volume", "mountPath": "/mnt/data"}],
         }
-
-        # Side‑car needs its python script – we embed via an ENTRYPOINT shell on first run.
-        # The wrapper will execute "python /playout_sidecar.py" but the file doesn’t exist yet.
-        # Therefore we preload it via an *init* style command at container start (here using args):
-        sidecar_container["args"] = [
-            "sh",
-            "-c",
-            f"""set -ex
-            cat <<'__SIDE__' > /playout_sidecar.py
-{sidecar_py}
-__SIDE__
-            chmod +x /playout_sidecar.py
-            pip install --no-cache-dir httpx psutil
-            exec \"$@\"   # jump back to wrapper's python call
-            """,
-        ]
-
         containers.append(sidecar_container)
+
+        # ------------------------------------------------------------------
+        # 7) Wrap every *other* container that already declares a command
+        # ------------------------------------------------------------------
+        for c in containers:
+            if c["name"] == "playout-sidecar":
+                continue
+            original_cmd = c.get("command") or []
+            if not original_cmd:  # image ENTRYPOINT – leave untouched
+                continue
+            joined = " ".join(shlex.quote(tok) for tok in original_cmd)
+            c["command"] = ["/bin/sh", "-c", f"exec {WRAPPER_PATH} {joined}"]
+
         pod_spec["containers"] = containers
 
-        # --------------------------------------
-        # 8) Prepend the wrapper to any container that *already* defines a command
-        # --------------------------------------
-        for c in containers:
-            if c.get("name") == "playout-sidecar":
-                continue  # already wrapped above
-            original_cmd = c.get("command", [])
-            if original_cmd:  # Only safe if we know what to exec
-                c["command"] = [WRAPPER_PATH] + original_cmd
-
-        # --------------------------------------
-        # 9) Create the Job object
-        # --------------------------------------
+        # ------------------------------------------------------------------
+        # 8) Create and submit the Job
+        # ------------------------------------------------------------------
         job_body = {
             "apiVersion": "batch/v1",
             "kind": "Job",
             "metadata": {
                 "name": job_name,
-                "labels": {"jobtemplate": jobtemplate_name},
+                "labels": {"jobtemplate": jt_name},
                 "annotations": {"tuskr.io/launched-by": "tuskr"},
             },
             "spec": {
-                "template": job_spec_from_template,
-                "ttlSecondsAfterFinished": 3 * 60 * 60,  # 3 h cleanup
+                "template": jt_pod_template,
+                "ttlSecondsAfterFinished": 3 * 60 * 60,
                 "backoffLimit": 0,
             },
         }
 
-        batch_api = kubernetes.client.BatchV1Api()
         try:
-            batch_api.create_namespaced_job(namespace=target_namespace, body=job_body)
+            kubernetes.client.BatchV1Api().create_namespaced_job(namespace=jt_ns, body=job_body)
         except kubernetes.client.exceptions.ApiException as e:
             logger.exception("Failed to create Job.")
             resp.status = falcon.HTTP_500
             resp.media = {"error": str(e)}
             return
 
-        # --------------------------------------
-        # 10) Optional: store callback URL if provided
-        # --------------------------------------
-        callback_url = req.get_param("callback")
-        if callback_url:
-            callback_key = f"job_callbacks::{target_namespace}::{job_name}"
-            callback_info = {"url": callback_url}
+        # Optional callback registration
+        if cb := req.get_param("callback"):
+            cb_key = f"job_callbacks::{jt_ns}::{job_name}"
+            cb_info = {"url": cb}
             if env_vars.get("AUTHORIZATION"):
-                callback_info["authorization"] = env_vars["AUTHORIZATION"]
-            redis_client.setex(callback_key, 3600, json.dumps(callback_info))
+                cb_info["authorization"] = env_vars["AUTHORIZATION"]
+            redis_client.setex(cb_key, 3600, json.dumps(cb_info))
 
-        logger.info("Created Job '%s' in '%s' from template '%s'.", job_name, target_namespace, jobtemplate_name)
-
+        logger.info("Created Job '%s' in '%s' from template '%s'.", job_name, jt_ns, jt_name)
         resp.status = falcon.HTTP_201
         resp.media = {
-            "message": f"Created Job '{job_name}' in '{target_namespace}' from template '{jobtemplate_name}'.",
+            "message": f"Created Job '{job_name}' in '{jt_ns}' from template '{jt_name}'.",
             "job_name": job_name,
-            "namespace": target_namespace,
+            "namespace": jt_ns,
             "token": token,
         }
