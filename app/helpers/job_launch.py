@@ -155,8 +155,7 @@ class LaunchResource:
 
         # 5a) Volumes for inputs and outputs
         pod_spec["volumes"] = pod_spec.get("volumes", []) + [
-            {"name": "inputs-volume", "emptyDir": {}},
-            {"name": "outputs-volume", "emptyDir": {}},
+            {"name": "data-volume", "emptyDir": {}},
         ]
 
         # 5b) Main container overrides & env injection
@@ -175,8 +174,7 @@ class LaunchResource:
             # Mount shared volumes
             main.setdefault("volumeMounts", []).extend(
                 [
-                    {"name": "inputs-volume", "mountPath": "/mnt/data"},
-                    {"name": "outputs-volume", "mountPath": "/mnt/data/outputs"},
+                    {"name": "data-volume", "mountPath": "/mnt/data"},
                 ]
             )
 
@@ -219,8 +217,7 @@ __WRAP__
                     {"name": "TUSKR_JOB_TOKEN", "value": token},
                 ],
                 "volumeMounts": [
-                    {"name": "inputs-volume", "mountPath": "/mnt/data"},
-                    {"name": "outputs-volume", "mountPath": "/mnt/data/outputs"},
+                    {"name": "data-volume", "mountPath": "/mnt/data"},
                 ],
             }
         ]
@@ -244,7 +241,7 @@ __WRAP__
                 {"name": "POD_NAME", "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}},
             ],
             "volumeMounts": [
-                {"name": "outputs-volume", "mountPath": "/mnt/data/outputs"},
+                {"name": "data-volume", "mountPath": "/mnt/data"},
             ],
         }
 
