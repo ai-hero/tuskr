@@ -210,7 +210,7 @@ exec "$@"                     # jump to the real entrypoint/command
 __WRAP__
                     chmod +x {WRAPPER_PATH}
 
-                    chmod -R 777 /mnt/data/inputs /mnt/data/outputs
+                    chmod -R 777 /mnt/data /mnt/data/inputs /mnt/data/outputs
                     """
                 ],
                 "env": [
