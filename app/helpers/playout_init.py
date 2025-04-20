@@ -63,16 +63,6 @@ def main() -> None:
             f.write(content)
         print(f"[init_fetch] Wrote input file: {filename}")
 
-    # Create a .env file for environment variables
-    env_vars = context.get("env_vars", {})
-    env_file_path = input_dir / ".env"
-    with env_file_path.open("w") as env_file:
-        # will be empty if no env_vars
-        for varname, value in env_vars.items():
-            # Quote or escape if needed
-            line = f'{varname}="{value}"\n'
-            env_file.write(line)
-
     print("[init_fetch] Successfully fetched and wrote context data.")
     sys.exit(0)
 
