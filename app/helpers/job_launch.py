@@ -245,7 +245,7 @@ python /playout_sidecar.py
             },
             "spec": {
                 "template": pod_tmpl,
-                "ttlSecondsAfterFinished": 3 * 60 * 60,
+                "ttlSecondsAfterFinished": 30,
                 "backoffLimit": 0,
             },
         }
