@@ -67,15 +67,86 @@ class JobResource:
         resp.status = falcon.HTTP_200
         resp.media = json.loads(job_data.decode("utf-8"))
 
-    def on_delete(self, req: Request, resp: Response, namespace: str, job_name: str) -> None:
-        """Delete the Job from Kubernetes (foreground propagation). Leaves Redis data as-is."""
+    def on_delete(
+        self,
+        req: Request,
+        resp: Response,
+        namespace: str,
+        job_name: str,
+    ) -> None:
+        """Cancel (grace‑stop) a Job by default.
+
+        If the client supplies ?force_delete=true we actually delete the Job
+        (behaviour identical to the old implementation).
+
+        Grace‑stop strategy
+        -------------------
+        1.  Suspend the Job (`spec.suspend = True`) so Kubernetes stops
+            creating new Pods.
+        2.  Find all running Pods whose label `job-name=<job_name>`.
+        3.  Send each Pod a `DELETE` with a non‑zero `grace_period_seconds`
+            (SIGTERM → graceful shutdown inside the container).
+        4.  Return 202 Accepted so the caller knows the stop was initiated
+            but may still be finishing.
+
+        This approach lets every container’s pre‑stop hook / signal handler
+        run, avoids creating “Failed” Job history objects, and leaves the Job
+        object around so you can still inspect logs or retry it later.
+        """
+        force_delete = req.get_param_as_bool("force_delete") or False
         batch_api = kubernetes.client.BatchV1Api()
+        core_api = kubernetes.client.CoreV1Api()
+
+        if force_delete:
+            # ---------- HARD DELETE ----------
+            try:
+                delete_resp = batch_api.delete_namespaced_job(
+                    name=job_name,
+                    namespace=namespace,
+                    body=kubernetes.client.V1DeleteOptions(propagation_policy="Foreground"),
+                )
+            except kubernetes.client.exceptions.ApiException as e:
+                if e.status == 404:
+                    msg = f"Job {job_name} not found in namespace {namespace}."
+                    logger.error(msg)
+                    resp.status = falcon.HTTP_404
+                    resp.media = {"error": msg}
+                    return
+                logger.exception("Unexpected error deleting Job.")
+                resp.status = falcon.HTTP_500
+                resp.media = {"error": str(e)}
+                return
+
+            resp.status = falcon.HTTP_200
+            resp.media = {
+                "message": f"Job {job_name} deleted (force=true).",
+                "status": delete_resp.to_dict(),
+            }
+            return
+
+        # ---------- GRACEFUL CANCEL ----------
         try:
-            delete_resp = batch_api.delete_namespaced_job(
+            # 1) Suspend the Job so no new Pods will be created.
+            batch_api.patch_namespaced_job(
                 name=job_name,
                 namespace=namespace,
-                body=kubernetes.client.V1DeleteOptions(propagation_policy="Foreground"),
+                body={"spec": {"suspend": True}},
             )
+
+            # 2) Find all Pods belonging to the Job.
+            pods = core_api.list_namespaced_pod(
+                namespace=namespace,
+                label_selector=f"job-name={job_name}",
+            )
+
+            # 3) Delete each Pod with a grace period (defaults to 30 s here).
+            for pod in pods.items:
+                core_api.delete_namespaced_pod(
+                    name=pod.metadata.name,
+                    namespace=namespace,
+                    grace_period_seconds=30,
+                )
+
         except kubernetes.client.exceptions.ApiException as e:
             if e.status == 404:
                 msg = f"Job {job_name} not found in namespace {namespace}."
@@ -83,14 +154,16 @@ class JobResource:
                 resp.status = falcon.HTTP_404
                 resp.media = {"error": msg}
                 return
-            else:
-                logger.exception("Unexpected error deleting Job.")
-                resp.status = falcon.HTTP_500
-                resp.media = {"error": str(e)}
-                return
+            logger.exception("Unexpected error cancelling Job.")
+            resp.status = falcon.HTTP_500
+            resp.media = {"error": str(e)}
+            return
 
-        resp.status = falcon.HTTP_200
+        resp.status = falcon.HTTP_202  # accepted, still terminating
         resp.media = {
-            "message": f"Job {job_name} deleted.",
-            "status": delete_resp.to_dict(),
+            "message": (
+                f"Job {job_name} cancellation initiated; pods are " f"terminating with SIGTERM (graceful‑stop)."
+            ),
+            "suspended": True,
+            "pods_signalled": len(pods.items),
         }

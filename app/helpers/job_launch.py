@@ -144,25 +144,37 @@ class LaunchResource:
                 merged[k] = {"name": k, "value": str(v)}
             return list(merged.values())
 
-        # 5a) Volumes for IO
-        pod_spec["volumes"] = pod_spec.get("volumes", []) + [
-            {"name": "inputs-volume", "emptyDir": {}},
-            {"name": "outputs-volume", "emptyDir": {}},
-        ]
+        # 5a) Volumes for IO – preserve existing volumes and add missing ones
+        volumes = pod_spec.get("volumes", [])
 
-        # 5b) MAIN container tweaks
+        def add_unique_volume(volumes: list[dict[str, Any]], new_vol: dict[str, Any]) -> None:
+            if not any(v.get("name") == new_vol["name"] for v in volumes):
+                volumes.append(new_vol)
+
+        add_unique_volume(volumes, {"name": "playout-inputs", "emptyDir": {}})
+        add_unique_volume(volumes, {"name": "playout-outputs", "emptyDir": {}})
+        pod_spec["volumes"] = volumes
+
+        # 5b) MAIN container tweaks – keep existing env, envFrom and volumeMounts; add missing mounts
         if containers:
             if command_override:
                 containers[0]["command"] = command_override
             if args_override:
                 containers[0]["args"] = args_override
-
             containers[0]["env"] = inject_env(containers[0].get("env", []), {"TUSKR_JOB_TOKEN": token, **env_vars})
+            existing_env_from = containers[0].get("envFrom", [])
+            if existing_env_from:
+                containers[0]["envFrom"] = existing_env_from
+            # Note: any pre-existing 'envFrom' is not modified
+            volume_mounts = containers[0].get("volumeMounts", [])
 
-            containers[0]["volumeMounts"] = containers[0].get("volumeMounts", []) + [
-                {"name": "inputs-volume", "mountPath": "/mnt/data/inputs"},
-                {"name": "outputs-volume", "mountPath": "/mnt/data/outputs"},
-            ]
+            def add_unique_mount(mounts: list[dict[str, Any]], new_mount: dict[str, Any]) -> None:
+                if not any(m.get("name") == new_mount["name"] for m in mounts):
+                    mounts.append(new_mount)
+
+            add_unique_mount(volume_mounts, {"name": "playout-inputs", "mountPath": "/mnt/data/inputs"})
+            add_unique_mount(volume_mounts, {"name": "playout-outputs", "mountPath": "/mnt/data/outputs"})
+            containers[0]["volumeMounts"] = volume_mounts
 
         # --------------------------------------
         # 6) Init‑container: playout_init
@@ -192,8 +204,8 @@ chmod -R 777 /mnt/data/inputs /mnt/data/outputs
                     env_vars,  # give it the same extras in case it needs them
                 ),
                 "volumeMounts": [
-                    {"name": "inputs-volume", "mountPath": "/mnt/data/inputs"},
-                    {"name": "outputs-volume", "mountPath": "/mnt/data/outputs"},
+                    {"name": "playout-inputs", "mountPath": "/mnt/data/inputs"},
+                    {"name": "playout-outputs", "mountPath": "/mnt/data/outputs"},
                 ],
             }
         ]
@@ -226,7 +238,7 @@ python /playout_sidecar.py
                 env_vars,
             ),
             "volumeMounts": [
-                {"name": "outputs-volume", "mountPath": "/mnt/data/outputs"},
+                {"name": "playout-outputs", "mountPath": "/mnt/data/outputs"},
             ],
         }
         containers.append(sidecar_container)
@@ -245,10 +257,12 @@ python /playout_sidecar.py
             },
             "spec": {
                 "template": pod_tmpl,
-                "ttlSecondsAfterFinished": 30,
+                "ttlSecondsAfterFinished": 600,
                 "backoffLimit": 0,
             },
         }
+
+        print(f"Job body: {json.dumps(job_body, indent=2)}")
 
         batch_api = kubernetes.client.BatchV1Api()
         try:
